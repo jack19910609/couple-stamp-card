@@ -1,0 +1,4 @@
+[functions.send-push]
+# Database pg_net calls use the independently verified shared webhook secret
+# in the function body rather than a browser/user JWT.
+verify_jwt = false

@@ -347,6 +347,16 @@ button.sync-badge { cursor: pointer; }
 .danger-panel { margin-top: 18px; padding: 14px; border: 1px solid rgba(133,40,31,.22); border-radius: 14px; color: #782e26; background: rgba(173,57,46,.09); font-size: 12px; line-height: 1.65; }
 .danger-panel p { margin: 5px 0 0; }
 .danger-primary { background: var(--red-dark); }
+.push-settings { margin-top: 24px; padding-top: 20px; border-top: 1px dashed var(--line); }
+.push-settings h3 { margin: 3px 0 6px; font-size: 18px; }
+.push-settings__status { margin: 10px 0; color: #7b612f; }
+.push-preference-list { display: grid; gap: 7px; margin-top: 13px; }
+.push-preference-list label { display: flex; align-items: flex-start; gap: 9px; padding: 9px; border-radius: 11px; background: rgba(74,51,35,.045); cursor: pointer; }
+.push-preference-list input { width: 17px; height: 17px; margin: 1px 0 0; accent-color: var(--red); }
+.push-preference-list input:disabled { opacity: .55; }
+.push-preference-list span { display: flex; min-width: 0; flex-direction: column; }
+.push-preference-list strong { font-size: 12px; }
+.push-preference-list small { margin-top: 2px; color: var(--muted); font-size: 10px; }
 
 .archive-hero { padding: 24px; border-radius: 22px; color: #fff8e8; background: linear-gradient(135deg, #5f4932, #82624a); box-shadow: 0 13px 28px rgba(74,51,35,.16); }
 .archive-hero .eyebrow { color: #ecd29d; }

@@ -11,6 +11,7 @@
 - 獨立且可追溯的蓋章事件：操作者、卡片、時間及留言
 - 十分鐘內復原，保留原事件與復原時間
 - Supabase Postgres Changes 即時同步
+- 站內通知、Web Push 訂閱偏好與背景原生通知（需完成下方 Push 部署）
 - optimistic UI、本機離線 outbox 與恢復網路後自動重送
 - 以事件 UUID 保證重送冪等，不會產生重複章
 - 已同步、同步中、離線待同步及同步失敗狀態
@@ -33,6 +34,8 @@ VITE_SUPABASE_PUBLISHABLE_KEY=your-publishable-or-anon-key
 ```
 
 Publishable／anon key 可以放在前端；不要把 `service_role` key 放進 Vite 環境變數。
+
+`VITE_VAPID_PUBLIC_KEY` 也是可公開的瀏覽器金鑰；VAPID 私鑰與 Push webhook 密鑰只能存放在 Supabase Edge Function Secrets，不能放進 GitHub Pages 或任何 `VITE_` 環境變數。
 
 若要執行自動化後端驗收，再於本機 `.env.local` 加入 `SUPABASE_SECRET_KEY`。這把金鑰只供驗證程式建立與清除暫時測試帳號，絕對不要加上 `VITE_` 前綴或提交至版本控制。
 
@@ -63,6 +66,18 @@ Migration 會建立：
 - 所有 RLS policies
 - `cards` 與 `stamp_events` 的 Realtime publication
 - 僅供受信任伺服器端驗收使用的 `service_role` 權限（不會暴露給前端）
+
+## 原生 Push 部署
+
+原生 Push 由 `supabase/functions/send-push` 發送；資料庫只會將新站內通知非同步轉送給這個 Function，因此 Push 服務失敗時不會影響蓋章或留言。
+
+1. 套用所有 migrations，包含 `202608050008_push_notifications.sql`。
+2. 部署 `send-push` Edge Function，並套用 [`supabase/config.toml`](supabase/config.toml) 的 `verify_jwt = false` 設定。
+3. 在 Supabase Edge Function Secrets 設定 [`supabase/functions/.env.example`](supabase/functions/.env.example) 所列的五個值。`VAPID_PRIVATE_KEY` 與 `PUSH_WEBHOOK_SECRET` 不可寫入 Git、前端或 SQL migration。
+4. 在 Supabase Vault 用同一個 `PUSH_WEBHOOK_SECRET` 建立名為 `couple_stamp_push_hook_secret` 的 secret。Migration 在這個 Vault secret 尚未存在時會安全略過 Push 轉送。
+5. 將相同的 `VAPID_PUBLIC_KEY` 填入 GitHub Pages 的 `VITE_VAPID_PUBLIC_KEY` 後重新部署前端。
+
+通知預設不會在鎖定畫面顯示留言內容。使用者必須到設定頁主動啟用通知；已開啟的 App 由 Realtime 更新，不會再顯示重複的原生系統通知。
 
 若 Auth 的「Confirm email」保持開啟，新使用者必須先點擊驗證信中的連結才能登入。測試階段也可以在 Supabase Dashboard 的 Auth 設定中關閉 email confirmation。
 

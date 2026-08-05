@@ -340,7 +340,34 @@ async function main() {
   const copiedPersonal = singleData(await b.client.rpc("copy_card", { target_card_id: personalCard.id }), "copy archived card");
   assert(copiedPersonal.status === "active" && copiedPersonal.id !== personalCard.id && copiedPersonal.mode === "personal", "Copy did not create a fresh active round");
 
-  console.log("11/14 Verifying outsider RLS isolation and RPC-only mutations…");
+  console.log("11/15 Verifying Push subscription ownership, preferences, and RLS…");
+  const pushEndpoint = `https://push.example.invalid/subscriptions/${randomUUID()}`;
+  const enabledPushSubscription = singleData(await b.client.rpc("enable_push_notifications", {
+    subscription_endpoint: pushEndpoint,
+    subscription_p256dh: "p".repeat(32),
+    subscription_auth: "a".repeat(24),
+    subscription_device_label: "Supabase integration verification",
+  }), "enable Push subscription");
+  assert(enabledPushSubscription.user_id === b.user.id && enabledPushSubscription.enabled, "Push subscription was not bound to its owner");
+  const ownPushRows = resultData(await b.client.from("push_subscriptions").select("id, endpoint, enabled").eq("endpoint", pushEndpoint), "read own Push subscription");
+  const partnerPushRows = resultData(await a.client.from("push_subscriptions").select("id").eq("endpoint", pushEndpoint), "partner Push subscription query");
+  assert(ownPushRows.length === 1 && partnerPushRows.length === 0, "Push subscriptions are not private to their owner");
+  const updatedPushPreferences = singleData(await b.client.rpc("update_push_notification_preferences", {
+    next_card_updates: false, next_stamp_updates: true, next_interaction_updates: false, next_reward_updates: true,
+  }), "update Push preferences");
+  assert(updatedPushPreferences.push_enabled && !updatedPushPreferences.card_updates && !updatedPushPreferences.interaction_updates, "Push preferences did not persist");
+  const directPushSubscriptionWrite = await b.client.from("push_subscriptions").insert({
+    user_id: b.user.id, endpoint: `https://push.example.invalid/direct/${randomUUID()}`, p256dh: "p".repeat(32), auth: "a".repeat(24),
+  });
+  const directPushPreferenceWrite = await b.client.from("notification_preferences").insert({ user_id: b.user.id, push_enabled: true });
+  const deliveryLogRead = resultData(await b.client.from("push_delivery_log").select("id"), "client Push delivery log query");
+  assert(directPushSubscriptionWrite.error && directPushPreferenceWrite.error && deliveryLogRead.length === 0, "A client could bypass Push RPCs or inspect delivery logs");
+  resultData(await b.client.rpc("disable_push_notifications", { subscription_endpoint: pushEndpoint }), "disable Push notifications");
+  const disabledPushPreferences = singleData(await b.client.from("notification_preferences").select("push_enabled").eq("user_id", b.user.id).single(), "read disabled Push preferences");
+  const disabledPushRows = resultData(await b.client.from("push_subscriptions").select("enabled").eq("endpoint", pushEndpoint), "read disabled Push subscription");
+  assert(!disabledPushPreferences.push_enabled && disabledPushRows.length === 1 && !disabledPushRows[0].enabled, "Disabling Push did not deactivate the subscription");
+
+  console.log("12/15 Verifying outsider RLS isolation and RPC-only mutations…");
   const outsiderRead = resultData(await outsider.client.from("cards").select("id").eq("id", sharedCard.id), "outsider card query");
   assert(outsiderRead.length === 0, "Outsider could read a Couple Space card");
   const outsiderWrite = await outsider.client.from("cards").insert({
@@ -356,7 +383,7 @@ async function main() {
   const directNotificationWrite = await b.client.from("user_notifications").insert({ recipient_id: a.user.id, actor_id: b.user.id, space_id: invite.invite_space_id, kind: "stamp_created" });
   assert(directNotificationWrite.error, "A client could write notifications directly");
 
-  console.log("12/14 Verifying end, read-only archive, and blocked writes…");
+  console.log("13/15 Verifying end, read-only archive, and blocked writes…");
   const endedSpaceId = resultData(await a.client.rpc("end_couple_space"), "end Couple Space");
   assert(endedSpaceId === invite.invite_space_id, "Ended an unexpected Couple Space");
   const departedMembership = singleData(await b.client.from("couple_members").select("departed_at").eq("space_id", invite.invite_space_id).eq("user_id", b.user.id).single(), "partner reads departed membership");
@@ -388,7 +415,7 @@ async function main() {
   const archivedReactionWrite = await b.client.rpc("set_stamp_reaction", { target_event_id: firstSharedEventId, next_emoji: "👏" });
   assert(archivedCommentWrite.error && archivedReactionWrite.error, "Former members could write interactions after archiving");
 
-  console.log("13/14 Verifying original-partner-only recovery creates a fresh active space…");
+  console.log("14/15 Verifying original-partner-only recovery creates a fresh active space…");
   const recoveryRows = resultData(await a.client.rpc("create_recovery_invite", { target_archived_space_id: invite.invite_space_id }), "create recovery invite");
   const recoveryInvite = recoveryRows?.[0];
   assert(recoveryInvite && /^\d{6}$/.test(recoveryInvite.invite_code), "Recovery RPC did not return a six-digit code");
@@ -405,7 +432,7 @@ async function main() {
   }), "create card after recovery");
   assert(recoveredCard.status === "active", "Recovered partners could not create a fresh active card");
 
-  console.log("14/14 Verifying card archive history remains private…");
+  console.log("15/15 Verifying card archive history remains private…");
   const formerCards = resultData(await a.client.from("cards").select("id, status").eq("space_id", invite.invite_space_id).eq("status", "archived"), "former member reads archived cards");
   assert(formerCards.length >= 3, "Archived card history was not retained after ending the space");
   const outsiderActivities = resultData(await outsider.client.from("card_activity_events").select("id").eq("space_id", invite.invite_space_id), "outsider activity query");

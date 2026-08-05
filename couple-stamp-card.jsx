@@ -28,6 +28,7 @@ import {
 import { supabase, isSupabaseConfigured } from "./src/lib/supabase.js";
 import { CARD_MODE_LABELS, cardProgress, formatRelativeTime, isTerminalOutboxError, isUndoable, upsertById } from "./src/lib/domain.js";
 import { appendToQueue, readQueue, removeQueuedAction, replaceQueuedReaction, writeQueue } from "./src/lib/offlineQueue.js";
+import { currentPushSubscription, pushPermission, pushSupport, subscribeToPush, unsubscribeFromPush } from "./src/lib/push.js";
 
 function humanizeError(error) {
   const message = error?.message || String(error || "發生未知錯誤");
@@ -55,6 +56,11 @@ function humanizeError(error) {
     [/Comment ID already belongs/i, "這則留言和先前操作衝突，請再試一次"],
     [/Reaction is not supported/i, "只支援目前提供的表情回應"],
     [/Notification not found/i, "這則通知已不存在"],
+    [/Push permission was not granted/i, "通知權限尚未允許，請在瀏覽器或手機設定中開啟"],
+    [/Push is not_configured/i, "原生通知服務正在設定中，請稍後再試"],
+    [/Push is insecure/i, "原生通知需要透過安全網站使用"],
+    [/Push is unsupported/i, "這個瀏覽器目前不支援原生通知"],
+    [/Push subscription .* invalid/i, "通知裝置資料無效，請重新啟用"],
   ];
   return translations.find(([pattern]) => pattern.test(message))?.[1] || message;
 }
@@ -89,6 +95,23 @@ const CARD_MODE_DESCRIPTIONS = {
 };
 
 const REACTION_CHOICES = ["❤️", "👏", "🥰", "💪"];
+
+function pushTargetFromUrl(value = window.location.href) {
+  const url = new URL(value, window.location.origin);
+  const target = {
+    spaceId: url.searchParams.get("space"),
+    notificationId: url.searchParams.get("notification"),
+    cardId: url.searchParams.get("card"),
+    eventId: url.searchParams.get("event"),
+  };
+  return target.spaceId || target.notificationId || target.cardId || target.eventId ? target : null;
+}
+
+function clearPushTargetFromUrl() {
+  const url = new URL(window.location.href);
+  ["space", "notification", "card", "event"].forEach((key) => url.searchParams.delete(key));
+  window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+}
 
 function ModeIcon({ mode, size = 13 }) {
   if (mode === "personal") return <UserRound size={size} />;
@@ -694,7 +717,7 @@ function EventItem({ event, memberNames, currentUserId, onUndo, showCard, cardTi
   );
 }
 
-function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, onRelationshipChanged }) {
+function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, onRelationshipChanged, pushTarget, onPushTargetHandled }) {
   const [cards, setCards] = useState([]);
   const [events, setEvents] = useState([]);
   const [activities, setActivities] = useState([]);
@@ -1030,6 +1053,28 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
     }
   };
 
+  useEffect(() => {
+    if (!pushTarget || pushTarget.spaceId !== space.id) return;
+    if (pushTarget.notificationId) {
+      supabase.rpc("mark_notification_read", { target_notification_id: pushTarget.notificationId })
+        .then(({ data, error: readError }) => {
+          if (!readError && data) setNotifications((current) => upsertById(current, Array.isArray(data) ? data[0] : data));
+        });
+    }
+    if (!pushTarget.cardId) {
+      onPushTargetHandled();
+      return;
+    }
+    if (cards.some((card) => card.id === pushTarget.cardId)) {
+      setHighlightedEventId(pushTarget.eventId || null);
+      setSelectedCardId(pushTarget.cardId);
+      onPushTargetHandled();
+    } else if (!loading) {
+      onOpenArchive({ id: space.id, status: "active", focusEventId: pushTarget.eventId || null });
+      onPushTargetHandled();
+    }
+  }, [cards, loading, onOpenArchive, onPushTargetHandled, pushTarget, space.id]);
+
   const handleCreated = (card) => {
     setCards((current) => upsertById(current, card));
     setCreateOpen(false);
@@ -1205,6 +1250,115 @@ function EndSpaceModal({ onClose, onEnded }) {
   );
 }
 
+function PushNotificationSettings() {
+  const [support] = useState(() => pushSupport());
+  const [permission, setPermission] = useState(() => pushPermission());
+  const [preference, setPreference] = useState({ push_enabled: false, card_updates: true, stamp_updates: true, interaction_updates: true, reward_updates: true });
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data, error: preferenceError } = await supabase.from("notification_preferences")
+      .select("push_enabled, card_updates, stamp_updates, interaction_updates, reward_updates")
+      .maybeSingle();
+    setLoading(false);
+    if (preferenceError) return setError(humanizeError(preferenceError));
+    if (data) setPreference(data);
+    setPermission(pushPermission());
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const enable = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const subscription = await subscribeToPush();
+      const { error: enableError } = await supabase.rpc("enable_push_notifications", {
+        subscription_endpoint: subscription.endpoint,
+        subscription_p256dh: subscription.p256dh,
+        subscription_auth: subscription.auth,
+        subscription_device_label: navigator.userAgent.slice(0, 120),
+      });
+      if (enableError) throw enableError;
+      setPreference((current) => ({ ...current, push_enabled: true }));
+      setPermission(pushPermission());
+    } catch (enableError) {
+      setError(humanizeError(enableError));
+      setPermission(pushPermission());
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disable = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const existing = await currentPushSubscription();
+      const { error: disableError } = await supabase.rpc("disable_push_notifications", {
+        subscription_endpoint: existing?.endpoint || null,
+      });
+      if (disableError) throw disableError;
+      await unsubscribeFromPush();
+      setPreference((current) => ({ ...current, push_enabled: false }));
+    } catch (disableError) {
+      setError(humanizeError(disableError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const updatePreference = async (key, value) => {
+    const next = { ...preference, [key]: value };
+    setPreference(next);
+    const { data, error: updateError } = await supabase.rpc("update_push_notification_preferences", {
+      next_card_updates: next.card_updates,
+      next_stamp_updates: next.stamp_updates,
+      next_interaction_updates: next.interaction_updates,
+      next_reward_updates: next.reward_updates,
+    }).single();
+    if (updateError) {
+      setPreference(preference);
+      return setError(humanizeError(updateError));
+    }
+    setPreference(Array.isArray(data) ? data[0] : data);
+  };
+
+  const reason = {
+    unsupported: "這個瀏覽器尚不支援 Web Push。",
+    insecure: "原生通知只能在 HTTPS 的正式網站上啟用。",
+    not_configured: "通知服務正在完成安全設定，暫時無法啟用。",
+  }[support.reason];
+  const options = [
+    ["card_updates", "卡片與完成", "建立卡片、完成卡片"],
+    ["stamp_updates", "蓋章", "伴侶新增蓋章"],
+    ["interaction_updates", "留言與表情", "新的留言或表情回應"],
+    ["reward_updates", "獎勵", "申請或確認兌換獎勵"],
+  ];
+
+  return (
+    <section className="push-settings" aria-labelledby="push-settings-title">
+      <span className="eyebrow">NATIVE NOTIFICATIONS</span>
+      <h3 id="push-settings-title">原生通知</h3>
+      <p className="tiny">只有伴侶的新互動會通知你；鎖定畫面不會顯示留言內容。</p>
+      {!support.supported ? <p className="tiny push-settings__status">{reason}</p> : <>
+        <p className="tiny push-settings__status">通知權限：{permission === "granted" ? "已允許" : permission === "denied" ? "已拒絕" : "尚未詢問"}</p>
+        <button type="button" className="secondary-button" disabled={busy || loading} onClick={preference.push_enabled ? disable : enable}>
+          {busy ? "處理中…" : preference.push_enabled ? "關閉這個帳號的 Push 通知" : "在這台裝置啟用 Push 通知"}
+        </button>
+        {permission === "denied" && <p className="tiny">請到瀏覽器或手機的網站通知設定中允許「愛的集點卡」，再回來啟用。</p>}
+        <div className="push-preference-list" aria-label="Push 通知類型">
+          {options.map(([key, label, description]) => <label key={key}><input type="checkbox" checked={preference[key]} disabled={busy || !preference.push_enabled} onChange={(event) => updatePreference(key, event.target.checked)} /><span><strong>{label}</strong><small>{description}</small></span></label>)}
+        </div>
+      </>}
+      <ErrorNotice onRetry={load}>{error}</ErrorNotice>
+    </section>
+  );
+}
+
 function SettingsModal({ profile, space, onClose, onOpenArchive, onEndSpace }) {
   const [name, setName] = useState(profile.display_name);
   const [busy, setBusy] = useState(false);
@@ -1230,6 +1384,7 @@ function SettingsModal({ profile, space, onClose, onOpenArchive, onEndSpace }) {
           <button type="button" className="secondary-button danger-button" onClick={onEndSpace}>結束共同空間</button>
           <button type="button" className="secondary-button danger-button" onClick={() => supabase.auth.signOut()}><LogOut size={17} /> 登出帳號</button>
         </form>
+        <PushNotificationSettings />
       </section>
     </div>
   );
@@ -1351,6 +1506,7 @@ function AuthenticatedApp({ session }) {
   const [invite, setInvite] = useState(null);
   const [archives, setArchives] = useState([]);
   const [archiveView, setArchiveView] = useState(null);
+  const [pushTarget, setPushTarget] = useState(() => pushTargetFromUrl());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -1398,7 +1554,18 @@ function AuthenticatedApp({ session }) {
     setLoading(false);
   }, [session.user.id, session.user.user_metadata]);
 
+  const consumePushTarget = useCallback(() => {
+    clearPushTargetFromUrl();
+    setPushTarget(null);
+  }, []);
+
   useEffect(() => { refreshIdentity(); }, [refreshIdentity]);
+
+  useEffect(() => {
+    const handleNavigation = () => setPushTarget(pushTargetFromUrl());
+    window.addEventListener("popstate", handleNavigation);
+    return () => window.removeEventListener("popstate", handleNavigation);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1455,12 +1622,20 @@ function AuthenticatedApp({ session }) {
     return () => window.clearInterval(interval);
   }, [membership?.space_id, refreshIdentity]);
 
+  useEffect(() => {
+    if (loading || !pushTarget?.spaceId || membership?.space_id === pushTarget.spaceId) return;
+    const targetArchive = archives.find((archive) => archive.id === pushTarget.spaceId);
+    if (!targetArchive) return;
+    setArchiveView({ ...targetArchive, focusEventId: pushTarget.eventId || null });
+    consumePushTarget();
+  }, [archives, consumePushTarget, loading, membership?.space_id, pushTarget]);
+
   if (loading) return <LoadingScreen />;
   if (error && !profile) return <main className="app-shell app-shell--centered"><Brand /><ErrorNotice onRetry={refreshIdentity}>{error}</ErrorNotice></main>;
   if (!profile?.display_name) return <ProfileGate profile={profile} onSaved={(saved) => { setProfile(saved); refreshIdentity(); }} />;
   if (archiveView) return <ArchiveScreen profile={profile} archive={archiveView} onBack={() => setArchiveView(null)} onRefresh={refreshIdentity} />;
   if (!membership || members.length < 2) return <PairingScreen profile={profile} membership={membership} invite={invite} archives={archives} onOpenArchive={setArchiveView} onRefresh={refreshIdentity} />;
-  return <Dashboard user={session.user} accessToken={session.access_token} profile={profile} space={{ id: membership.space_id, status: "active" }} members={members} onOpenArchive={setArchiveView} onRelationshipChanged={refreshIdentity} />;
+  return <Dashboard user={session.user} accessToken={session.access_token} profile={profile} space={{ id: membership.space_id, status: "active" }} members={members} onOpenArchive={setArchiveView} onRelationshipChanged={refreshIdentity} pushTarget={pushTarget?.spaceId === membership.space_id ? pushTarget : null} onPushTargetHandled={consumePushTarget} />;
 }
 
 export default function CoupleStampCard() {
