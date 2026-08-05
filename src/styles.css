@@ -234,8 +234,8 @@ button.sync-badge { cursor: pointer; }
 .event-reactions small { color: var(--muted); font-size: 10px; font-weight: 800; }
 .comment-list { display: grid; gap: 7px; margin-top: 9px; }
 .comment-item { display: flex; align-items: flex-start; gap: 7px; padding: 8px; border-radius: 10px; background: rgba(74,51,35,.045); }
-.comment-item .avatar { margin-top: 1px; }
-.comment-item > span { min-width: 0; display: flex; flex: 1; flex-direction: column; }
+.comment-item .avatar { flex: 0 0 auto; margin-top: 1px; }
+.comment-copy { min-width: 0; display: flex; flex: 1; flex-direction: column; }
 .comment-item strong { font-size: 10px; }
 .comment-item p { margin: 2px 0; overflow-wrap: anywhere; font-size: 12px; line-height: 1.5; }
 .comment-item time { color: var(--muted); font-size: 9px; }
@@ -321,7 +321,8 @@ button.sync-badge { cursor: pointer; }
 .notification-list { display: grid; gap: 7px; }
 .notification-item { position: relative; width: 100%; display: flex; align-items: flex-start; gap: 9px; padding: 11px 8px; border: 0; border-radius: 12px; color: var(--ink); background: transparent; text-align: left; cursor: pointer; }
 .notification-item--unread { background: rgba(208,163,69,.12); }
-.notification-item > span { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.notification-item > .avatar { flex: 0 0 auto; }
+.notification-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
 .notification-item strong { font-size: 12px; line-height: 1.45; }
 .notification-item small { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .notification-item time { color: var(--muted); font-size: 10px; }
