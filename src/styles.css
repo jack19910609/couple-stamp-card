@@ -148,7 +148,7 @@ input::placeholder, textarea::placeholder { color: #b3a284; }
 .notice--error { color: #85281f; background: rgba(173,57,46,.1); border: 1px solid rgba(173,57,46,.2); }
 .notice--success { color: #37603c; background: rgba(61,118,67,.11); }
 .notice button { border: 0; background: transparent; color: inherit; font-weight: 800; cursor: pointer; }
-.spin { animation: spin 1s linear infinite; }
+.spin { align-self: center; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .identity-row, .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
