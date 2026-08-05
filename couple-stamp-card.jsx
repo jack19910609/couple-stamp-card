@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Archive,
   ArrowLeft,
+  Bell,
   Check,
   Clock3,
   Copy,
@@ -14,6 +15,7 @@ import {
   Plus,
   RefreshCw,
   Settings,
+  Send,
   Ticket,
   Trophy,
   Undo2,
@@ -25,7 +27,7 @@ import {
 } from "lucide-react";
 import { supabase, isSupabaseConfigured } from "./src/lib/supabase.js";
 import { CARD_MODE_LABELS, cardProgress, formatRelativeTime, isTerminalOutboxError, isUndoable, upsertById } from "./src/lib/domain.js";
-import { appendToQueue, readQueue, removeQueuedAction, writeQueue } from "./src/lib/offlineQueue.js";
+import { appendToQueue, readQueue, removeQueuedAction, replaceQueuedReaction, writeQueue } from "./src/lib/offlineQueue.js";
 
 function humanizeError(error) {
   const message = error?.message || String(error || "發生未知錯誤");
@@ -49,6 +51,10 @@ function humanizeError(error) {
     [/Cannot undo after reward redemption/i, "已進入獎勵兌換流程，不能再復原這個章"],
     [/undo window has expired/i, "十分鐘的復原時間已結束"],
     [/Card is already complete/i, "這張卡已經集滿"],
+    [/A comment between/i, "留言須介於 1 到 300 個字元"],
+    [/Comment ID already belongs/i, "這則留言和先前操作衝突，請再試一次"],
+    [/Reaction is not supported/i, "只支援目前提供的表情回應"],
+    [/Notification not found/i, "這則通知已不存在"],
   ];
   return translations.find(([pattern]) => pattern.test(message))?.[1] || message;
 }
@@ -81,6 +87,8 @@ const CARD_MODE_DESCRIPTIONS = {
   shared: "兩人的章會累積到同一個共同目標。",
   competition: "兩人各自累積，先達成目標者獲勝。",
 };
+
+const REACTION_CHOICES = ["❤️", "👏", "🥰", "💪"];
 
 function ModeIcon({ mode, size = 13 }) {
   if (mode === "personal") return <UserRound size={size} />;
@@ -540,6 +548,42 @@ function CardActionsModal({ card, onClose, onEdit, onCopy, onArchive }) {
   );
 }
 
+function NotificationCenterModal({ notifications, memberNames, onClose, onOpenNotification, onMarkAllRead }) {
+  const [busy, setBusy] = useState(false);
+  useModalScrollLock();
+  const unreadCount = notifications.filter((notification) => !notification.read_at).length;
+  const copy = (notification) => {
+    const actor = memberNames[notification.actor_id] || "伴侶";
+    const title = notification.data?.title ? `「${notification.data.title}」` : "這張卡片";
+    const labels = {
+      card_created: `${actor} 建立了 ${title}`,
+      stamp_created: `${actor} 蓋了一個章`,
+      card_completed: `${actor} 完成了 ${title}`,
+      comment_created: `${actor} 留下了一則回覆`,
+      reaction_created: `${actor} 回應了 ${notification.data?.emoji || "表情"}`,
+      reward_requested: `${actor} 申請兌換 ${title} 的獎勵`,
+      reward_redeemed: `${actor} 確認 ${title} 的獎勵已兌換`,
+    };
+    return labels[notification.kind] || `${actor} 更新了互動`;
+  };
+  const markAll = async () => {
+    setBusy(true);
+    await onMarkAllRead();
+    setBusy(false);
+  };
+  return (
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="modal-sheet notification-sheet" role="dialog" aria-modal="true" aria-labelledby="notifications-title">
+        <div className="modal-heading"><div><span className="eyebrow">JUST FOR YOU</span><h2 id="notifications-title">互動通知</h2></div><button className="icon-button" aria-label="關閉" onClick={onClose}><X /></button></div>
+        {unreadCount > 0 && <button className="text-button notification-read-all" disabled={busy} onClick={markAll}><Check size={16} /> 全部標示為已讀</button>}
+        <div className="notification-list">
+          {notifications.length ? notifications.map((notification) => <button className={`notification-item ${notification.read_at ? "" : "notification-item--unread"}`} key={notification.id} onClick={() => onOpenNotification(notification)}><InitialAvatar name={memberNames[notification.actor_id] || "伴侶"} small /><span><strong>{copy(notification)}</strong>{notification.data?.body && <small>{notification.data.body}</small>}{notification.data?.note && <small>{notification.data.note}</small>}<time>{formatRelativeTime(notification.created_at)}</time></span>{!notification.read_at && <i aria-label="未讀" />}</button>) : <div className="empty-inline">目前沒有新的互動通知。</div>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function CardActivityItem({ activity, memberNames }) {
   const labels = {
     created: "建立了這張卡片",
@@ -613,17 +657,37 @@ function CardTile({ card, events, memberNames, currentUserId, onOpen }) {
   );
 }
 
-function EventItem({ event, memberNames, currentUserId, onUndo, showCard, cardTitle, readOnly = false }) {
+function EventItem({ event, memberNames, currentUserId, onUndo, showCard, cardTitle, comments = [], reactions = [], onAddComment, onSetReaction, readOnly = false, highlighted = false }) {
   const undone = Boolean(event.undone_at);
   const name = memberNames[event.actor_id] || "伴侶";
+  const [commentDraft, setCommentDraft] = useState("");
+  const eventComments = comments.filter((comment) => comment.event_id === event.id);
+  const eventReactions = reactions.filter((reaction) => reaction.event_id === event.id);
+  const ownReaction = eventReactions.find((reaction) => reaction.actor_id === currentUserId)?.emoji || null;
+  const canInteract = !readOnly && !event.pending;
+  const addComment = (submitEvent) => {
+    submitEvent.preventDefault();
+    const body = commentDraft.trim();
+    if (!body || !onAddComment) return;
+    onAddComment(event, body);
+    setCommentDraft("");
+  };
   return (
-    <div className={`event-item ${undone ? "event-item--undone" : ""}`}>
+    <div className={`event-item ${undone ? "event-item--undone" : ""} ${highlighted ? "event-item--highlighted" : ""}`}>
       <InitialAvatar name={name} small />
       <div className="event-copy">
         <strong>{name}{undone ? " 復原了一個章" : " 蓋了一個章"}</strong>
         {showCard && <span>在「{cardTitle}」</span>}
         <p>{event.note}</p>
         <span className="event-time">{event.pending ? "等待同步" : formatRelativeTime(event.undone_at || event.occurred_at)}</span>
+        <div className="event-reactions" aria-label="表情回應">
+          {REACTION_CHOICES.map((emoji) => {
+            const count = eventReactions.filter((reaction) => reaction.emoji === emoji).length;
+            return <button type="button" disabled={!canInteract} aria-pressed={ownReaction === emoji} className={ownReaction === emoji ? "is-active" : ""} key={emoji} onClick={() => onSetReaction?.(event, ownReaction === emoji ? null : emoji)}>{emoji}{count ? <small>{count}</small> : null}</button>;
+          })}
+        </div>
+        {eventComments.length > 0 && <div className="comment-list">{eventComments.map((comment) => <div className="comment-item" key={comment.id}><InitialAvatar name={memberNames[comment.author_id] || "伴侶"} small /><span><strong>{memberNames[comment.author_id] || "伴侶"}</strong><p>{comment.body}</p><time>{comment.pending ? "等待同步" : formatRelativeTime(comment.created_at)}</time></span></div>)}</div>}
+        {canInteract && <form className="comment-form" onSubmit={addComment}><label className="sr-only" htmlFor={`comment-${event.id}`}>回覆這次蓋章</label><input id={`comment-${event.id}`} maxLength={300} value={commentDraft} onChange={(inputEvent) => setCommentDraft(inputEvent.target.value)} placeholder="留下一句回覆…" /><button aria-label="送出回覆" disabled={!commentDraft.trim()}><Send size={15} /></button></form>}
       </div>
       {!readOnly && !undone && isUndoable(event, currentUserId) && <button className="undo-button" onClick={() => onUndo(event)}><Undo2 size={14} /> 復原</button>}
     </div>
@@ -634,11 +698,16 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
   const [cards, setCards] = useState([]);
   const [events, setEvents] = useState([]);
   const [activities, setActivities] = useState([]);
+  const [comments, setComments] = useState([]);
+  const [reactions, setReactions] = useState([]);
+  const [notifications, setNotifications] = useState([]);
   const [selectedCardId, setSelectedCardId] = useState(null);
+  const [highlightedEventId, setHighlightedEventId] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [stampOpen, setStampOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [cardActionsOpen, setCardActionsOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [endSpaceOpen, setEndSpaceOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -653,17 +722,38 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
   const memberNames = useMemo(() => Object.fromEntries(members.map((member) => [member.user_id, member.profile?.display_name || "伴侶"])), [members]);
   const partner = members.find((member) => member.user_id !== user.id);
   const selectedCard = cards.find((card) => card.id === selectedCardId) || null;
+  const unreadNotificationCount = notifications.filter((notification) => !notification.read_at).length;
+
+  // A queued reaction represents the user's newest desired state. Keep that
+  // local state visible when a background fetch or an earlier Realtime event
+  // arrives before the queued operation is acknowledged by Supabase.
+  const mergeReactionsWithQueue = useCallback((serverRows, currentRows = []) => {
+    const queuedByEvent = new Map(outboxRef.current
+      .filter((action) => action.type === "reaction")
+      .map((action) => [action.eventId, action]));
+    const confirmed = serverRows.filter((reaction) => !(reaction.actor_id === user.id && queuedByEvent.has(reaction.event_id)));
+    const optimistic = [...queuedByEvent.values()].flatMap((action) => {
+      if (!action.emoji) return [];
+      const local = currentRows.find((reaction) => reaction.event_id === action.eventId && reaction.actor_id === user.id);
+      const desired = action.reaction || local;
+      return desired ? [{ ...desired, emoji: action.emoji, pending: true }] : [];
+    });
+    return [...optimistic, ...confirmed];
+  }, [user.id]);
 
   const loadData = useCallback(async () => {
     setError("");
-    const [cardsResult, eventsResult, activitiesResult] = await Promise.all([
+    const [cardsResult, eventsResult, activitiesResult, commentsResult, reactionsResult, notificationsResult] = await Promise.all([
       supabase.from("cards").select("*").eq("space_id", space.id).eq("status", "active").order("created_at", { ascending: false }),
       supabase.from("stamp_events").select("*").eq("space_id", space.id).order("occurred_at", { ascending: false }),
       supabase.from("card_activity_events").select("*").eq("space_id", space.id).order("created_at", { ascending: false }),
+      supabase.from("stamp_comments").select("*").eq("space_id", space.id).order("created_at"),
+      supabase.from("stamp_reactions").select("*").eq("space_id", space.id).order("updated_at"),
+      supabase.from("user_notifications").select("*").eq("space_id", space.id).eq("recipient_id", user.id).order("created_at", { ascending: false }).limit(50),
     ]);
     setLoading(false);
-    if (cardsResult.error || eventsResult.error || activitiesResult.error) {
-      setError(humanizeError(cardsResult.error || eventsResult.error || activitiesResult.error));
+    if (cardsResult.error || eventsResult.error || activitiesResult.error || commentsResult.error || reactionsResult.error || notificationsResult.error) {
+      setError(humanizeError(cardsResult.error || eventsResult.error || activitiesResult.error || commentsResult.error || reactionsResult.error || notificationsResult.error));
       return;
     }
     setCards(cardsResult.data || []);
@@ -672,7 +762,13 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
       return [...pending, ...(eventsResult.data || [])];
     });
     setActivities(activitiesResult.data || []);
-  }, [space.id]);
+    setComments((current) => {
+      const pending = current.filter((item) => item.pending && !(commentsResult.data || []).some((saved) => saved.id === item.id));
+      return [...pending, ...(commentsResult.data || [])];
+    });
+    setReactions((current) => mergeReactionsWithQueue(reactionsResult.data || [], current));
+    setNotifications(notificationsResult.data || []);
+  }, [mergeReactionsWithQueue, space.id, user.id]);
 
   const persistOutbox = useCallback((updater) => {
     setOutbox((current) => {
@@ -691,32 +787,66 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
     try {
       while (outboxRef.current.length && navigator.onLine) {
         const action = outboxRef.current[0];
-        const request = action.type === "stamp"
-          ? supabase.rpc("create_stamp_event", {
+        let request;
+        if (action.type === "stamp") {
+          request = supabase.rpc("create_stamp_event", {
               event_id: action.event.id,
               target_card_id: action.event.card_id,
               event_note: action.event.note,
               event_occurred_at: action.event.occurred_at,
-            }).single()
-          : supabase.rpc("undo_stamp_event", {
+            }).single();
+        } else if (action.type === "undo") {
+          request = supabase.rpc("undo_stamp_event", {
               target_event_id: action.eventId,
               undo_requested_at: action.requestedAt,
             }).single();
+        } else if (action.type === "comment") {
+          request = supabase.rpc("create_stamp_comment", {
+            comment_id: action.comment.id,
+            target_event_id: action.comment.event_id,
+            comment_body: action.comment.body,
+          }).single();
+        } else {
+          request = supabase.rpc("set_stamp_reaction", {
+            target_event_id: action.eventId,
+            next_emoji: action.emoji,
+          });
+        }
         const { data, error: mutationError } = await request;
         if (mutationError) {
           if (!isTerminalOutboxError(mutationError)) throw mutationError;
           if (action.type === "stamp") {
             setEvents((current) => current.filter((event) => event.id !== action.event.id));
-          } else {
+          } else if (action.type === "undo") {
             setEvents((current) => current.map((event) => event.id === action.eventId
               ? { ...event, undone_at: null, undone_by: null, pending: false }
               : event));
+          } else if (action.type === "comment") {
+            setComments((current) => current.filter((comment) => comment.id !== action.comment.id));
+          } else {
+            setReactions((current) => {
+              const withoutCurrent = current.filter((reaction) => !(reaction.event_id === action.eventId && reaction.actor_id === user.id));
+              return action.previousReaction ? [...withoutCurrent, { ...action.previousReaction, pending: false }] : withoutCurrent;
+            });
           }
           persistOutbox((current) => removeQueuedAction(user.id, current, action.id));
           setError(`${humanizeError(mutationError)}；這筆離線操作未送出。`);
           continue;
         }
-        setEvents((current) => upsertById(current, { ...data, pending: false }));
+        if (action.type === "stamp" || action.type === "undo") {
+          setEvents((current) => upsertById(current, { ...data, pending: false }));
+        } else if (action.type === "comment") {
+          setComments((current) => upsertById(current, { ...data, pending: false }));
+        } else {
+          const reaction = Array.isArray(data) ? data[0] : data;
+          const hasNewerReaction = outboxRef.current.some((item) => item.type === "reaction" && item.eventId === action.eventId && item.id !== action.id);
+          if (!hasNewerReaction) {
+            setReactions((current) => {
+              const withoutCurrent = current.filter((item) => !(item.event_id === action.eventId && item.actor_id === user.id));
+              return reaction ? [...withoutCurrent, { ...reaction, pending: false }] : withoutCurrent;
+            });
+          }
+        }
         persistOutbox((current) => removeQueuedAction(user.id, current, action.id));
       }
     } catch (flushError) {
@@ -752,6 +882,26 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
           if (payload.eventType === "DELETE") setActivities((current) => current.filter((item) => item.id !== payload.old.id));
           else setActivities((current) => upsertById(current, payload.new));
         })
+        .on("postgres_changes", { event: "*", schema: "public", table: "stamp_comments", filter: `space_id=eq.${space.id}` }, (payload) => {
+          if (payload.eventType === "DELETE") setComments((current) => current.filter((item) => item.id !== payload.old.id));
+          else setComments((current) => upsertById(current, { ...payload.new, pending: false }));
+        })
+        .on("postgres_changes", { event: "*", schema: "public", table: "stamp_reactions", filter: `space_id=eq.${space.id}` }, (payload) => {
+          if (payload.eventType === "DELETE") setReactions((current) => current.filter((item) => item.id !== payload.old.id));
+          else setReactions((current) => {
+            const queuedReaction = payload.new.actor_id === user.id && outboxRef.current.find((action) => action.type === "reaction" && action.eventId === payload.new.event_id);
+            if (queuedReaction) return current;
+            return [
+              { ...payload.new, pending: false },
+              ...current.filter((item) => !(item.event_id === payload.new.event_id && item.actor_id === payload.new.actor_id)),
+            ];
+          });
+        })
+        .on("postgres_changes", { event: "*", schema: "public", table: "user_notifications", filter: `recipient_id=eq.${user.id}` }, (payload) => {
+          if (payload.eventType === "DELETE") setNotifications((current) => current.filter((item) => item.id !== payload.old.id));
+          else if (payload.eventType === "INSERT") setNotifications((current) => [payload.new, ...current.filter((item) => item.id !== payload.new.id)]);
+          else setNotifications((current) => upsertById(current, payload.new));
+        })
         .subscribe((status) => setRealtimeStatus(status));
     };
     subscribe().catch((realtimeError) => setError(humanizeError(realtimeError)));
@@ -759,7 +909,7 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
       cancelled = true;
       if (channel) supabase.removeChannel(channel);
     };
-  }, [accessToken, space.id]);
+  }, [accessToken, mergeReactionsWithQueue, space.id, user.id]);
 
   useEffect(() => {
     const goOnline = () => { setOnline(true); window.setTimeout(flushOutbox, 0); };
@@ -804,6 +954,80 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
       eventId: event.id,
       requestedAt: undoneAt,
     }));
+  };
+
+  const addComment = (event, body) => {
+    const comment = {
+      id: crypto.randomUUID(),
+      event_id: event.id,
+      card_id: event.card_id,
+      space_id: space.id,
+      author_id: user.id,
+      body,
+      created_at: new Date().toISOString(),
+      pending: true,
+    };
+    setComments((current) => [...current, comment]);
+    persistOutbox((current) => appendToQueue(user.id, current, { id: crypto.randomUUID(), type: "comment", comment }));
+  };
+
+  const setReaction = (event, emoji) => {
+    const currentReaction = reactions.find((reaction) => reaction.event_id === event.id && reaction.actor_id === user.id) || null;
+    const queuedReaction = outboxRef.current.find((action) => action.type === "reaction" && action.eventId === event.id);
+    const nextReaction = emoji ? {
+      id: currentReaction?.id || crypto.randomUUID(),
+      event_id: event.id,
+      card_id: event.card_id,
+      space_id: space.id,
+      actor_id: user.id,
+      emoji,
+      created_at: currentReaction?.created_at || new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      pending: true,
+    } : null;
+    setReactions((current) => {
+      const withoutCurrent = current.filter((reaction) => !(reaction.event_id === event.id && reaction.actor_id === user.id));
+      return nextReaction ? [...withoutCurrent, nextReaction] : withoutCurrent;
+    });
+    persistOutbox((current) => replaceQueuedReaction(user.id, current, {
+      id: crypto.randomUUID(),
+      type: "reaction",
+      eventId: event.id,
+      emoji,
+      reaction: nextReaction,
+      previousReaction: queuedReaction ? queuedReaction.previousReaction : currentReaction,
+    }));
+  };
+
+  const markNotificationRead = async (notification) => {
+    if (notification.read_at) return notification;
+    const { data, error: rpcError } = await supabase.rpc("mark_notification_read", { target_notification_id: notification.id }).single();
+    if (rpcError) throw rpcError;
+    const updated = Array.isArray(data) ? data[0] : data;
+    setNotifications((current) => upsertById(current, updated));
+    return updated;
+  };
+
+  const markAllNotificationsRead = async () => {
+    const { error: rpcError } = await supabase.rpc("mark_all_notifications_read", { target_space_id: space.id });
+    if (rpcError) return setError(humanizeError(rpcError));
+    const now = new Date().toISOString();
+    setNotifications((current) => current.map((notification) => notification.read_at ? notification : { ...notification, read_at: now }));
+  };
+
+  const openNotification = async (notification) => {
+    try {
+      await markNotificationRead(notification);
+    } catch (notificationError) {
+      setError(humanizeError(notificationError));
+    }
+    setNotificationsOpen(false);
+    setHighlightedEventId(notification.stamp_event_id || null);
+    if (notification.card_id && cards.some((card) => card.id === notification.card_id)) {
+      setSelectedCardId(notification.card_id);
+    } else if (notification.card_id) {
+      onOpenArchive({ id: space.id, status: "active", focusEventId: notification.stamp_event_id || null });
+    }
   };
 
   const handleCreated = (card) => {
@@ -872,14 +1096,14 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
           <span className="avatar-pair"><InitialAvatar name={profile.display_name} small /><InitialAvatar name={partner?.profile?.display_name} small /></span>
           <span><strong>{profile.display_name} × {partner?.profile?.display_name || "伴侶"}</strong><small>Couple Space</small></span>
         </div>
-        <button className="icon-button" aria-label="設定" onClick={() => setSettingsOpen(true)}><Settings size={20} /></button>
+        <div className="topbar-actions"><button className="icon-button notification-button" aria-label={`互動通知${unreadNotificationCount ? `，${unreadNotificationCount} 則未讀` : ""}`} onClick={() => setNotificationsOpen(true)}><Bell size={20} />{unreadNotificationCount > 0 && <span>{unreadNotificationCount > 9 ? "9+" : unreadNotificationCount}</span>}</button><button className="icon-button" aria-label="設定" onClick={() => setSettingsOpen(true)}><Settings size={20} /></button></div>
       </div>
       <div className="sync-row"><SyncBadge online={online} realtimeStatus={realtimeStatus} queueLength={outbox.length} syncing={syncing} error={error} onRetry={flushOutbox} /></div>
       {error && <ErrorNotice onRetry={() => { loadData(); flushOutbox(); }}>{error}</ErrorNotice>}
 
       {selectedCard ? (
         <section className="detail-view">
-          <button className="back-button" onClick={() => setSelectedCardId(null)}><ArrowLeft size={17} /> 返回首頁</button>
+          <button className="back-button" onClick={() => { setSelectedCardId(null); setHighlightedEventId(null); }}><ArrowLeft size={17} /> 返回首頁</button>
           <div className="detail-heading"><span className="mode-pill"><ModeIcon mode={selectedProgress.mode} /> {CARD_MODE_LABELS[selectedProgress.mode]}</span><button className="detail-actions" onClick={() => setCardActionsOpen(true)} aria-label="管理卡片"><Settings size={17} /></button><h2>{selectedCard.title}</h2><p>{selectedCard.action_label}</p></div>
           <section className="stamp-card">
             {selectedProgress.complete && <span className="complete-ribbon complete-ribbon--large">{selectedProgress.mode === "competition" ? "勝負已定！" : "集滿了！"}</span>}
@@ -906,7 +1130,7 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
           </section>
           <section className="section-block">
             <div className="section-title"><div><span className="eyebrow">TRACEABLE MOMENTS</span><h3>最近蓋章紀錄</h3></div><Clock3 size={20} /></div>
-            {selectedEvents.length ? selectedEvents.map((event) => <EventItem key={event.id} event={event} memberNames={memberNames} currentUserId={user.id} onUndo={undoStamp} />) : <div className="empty-inline">還沒有紀錄，蓋下第一個章吧。</div>}
+            {selectedEvents.length ? selectedEvents.map((event) => <EventItem key={event.id} event={event} memberNames={memberNames} currentUserId={user.id} onUndo={undoStamp} comments={comments} reactions={reactions} onAddComment={addComment} onSetReaction={setReaction} highlighted={highlightedEventId === event.id} />) : <div className="empty-inline">還沒有紀錄，蓋下第一個章吧。</div>}
           </section>
           <section className="section-block">
             <div className="section-title"><div><span className="eyebrow">CARD LIFECYCLE</span><h3>規則與獎勵紀錄</h3></div><Clock3 size={20} /></div>
@@ -927,7 +1151,7 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
           </section>
           <section className="section-block">
             <div className="section-title"><div><span className="eyebrow">RECENT MOMENTS</span><h3>最近互動</h3></div><Clock3 size={20} /></div>
-            {recentEvents.length ? recentEvents.map((event) => <EventItem key={event.id} event={event} memberNames={memberNames} currentUserId={user.id} onUndo={undoStamp} showCard cardTitle={cards.find((card) => card.id === event.card_id)?.title || "共同卡"} />) : <div className="empty-inline">你們的第一個互動會出現在這裡。</div>}
+            {recentEvents.length ? recentEvents.map((event) => <EventItem key={event.id} event={event} memberNames={memberNames} currentUserId={user.id} onUndo={undoStamp} showCard cardTitle={cards.find((card) => card.id === event.card_id)?.title || "共同卡"} comments={comments} reactions={reactions} onAddComment={addComment} onSetReaction={setReaction} />) : <div className="empty-inline">你們的第一個互動會出現在這裡。</div>}
           </section>
         </>
       )}
@@ -936,6 +1160,7 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
       {stampOpen && selectedCard && <StampModal card={selectedCard} onClose={() => setStampOpen(false)} onStamp={addStamp} />}
       {editOpen && selectedCard && <EditCardModal card={selectedCard} members={members} events={events} onClose={() => setEditOpen(false)} onSaved={handleCardUpdated} />}
       {cardActionsOpen && selectedCard && <CardActionsModal card={selectedCard} onClose={() => setCardActionsOpen(false)} onEdit={() => { setCardActionsOpen(false); setEditOpen(true); }} onCopy={copySelectedCard} onArchive={archiveSelectedCard} />}
+      {notificationsOpen && <NotificationCenterModal notifications={notifications} memberNames={memberNames} onClose={() => setNotificationsOpen(false)} onOpenNotification={openNotification} onMarkAllRead={markAllNotificationsRead} />}
       {settingsOpen && <SettingsModal profile={profile} space={space} onClose={() => setSettingsOpen(false)} onOpenArchive={onOpenArchive} onEndSpace={() => { setSettingsOpen(false); setEndSpaceOpen(true); }} />}
       {endSpaceOpen && <EndSpaceModal onClose={() => setEndSpaceOpen(false)} onEnded={endSpace} />}
     </main>
@@ -1014,6 +1239,8 @@ function ArchiveScreen({ profile, archive, onBack, onRefresh }) {
   const [members, setMembers] = useState([]);
   const [cards, setCards] = useState([]);
   const [events, setEvents] = useState([]);
+  const [comments, setComments] = useState([]);
+  const [reactions, setReactions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -1024,19 +1251,23 @@ function ArchiveScreen({ profile, archive, onBack, onRefresh }) {
   const loadArchive = useCallback(async () => {
     setLoading(true);
     setError("");
-    const [membersResult, cardsResult, eventsResult] = await Promise.all([
+    const [membersResult, cardsResult, eventsResult, commentsResult, reactionsResult] = await Promise.all([
       supabase.from("couple_members").select("user_id, joined_at, profile:profiles!couple_members_user_id_fkey(id, display_name, avatar_url)").eq("space_id", archive.id).order("joined_at"),
       supabase.from("cards").select("*").eq("space_id", archive.id).eq("status", "archived").order("created_at", { ascending: false }),
       supabase.from("stamp_events").select("*").eq("space_id", archive.id).order("occurred_at", { ascending: false }).limit(12),
+      supabase.from("stamp_comments").select("*").eq("space_id", archive.id).order("created_at"),
+      supabase.from("stamp_reactions").select("*").eq("space_id", archive.id).order("updated_at"),
     ]);
     setLoading(false);
-    if (membersResult.error || cardsResult.error || eventsResult.error) {
-      setError(humanizeError(membersResult.error || cardsResult.error || eventsResult.error));
+    if (membersResult.error || cardsResult.error || eventsResult.error || commentsResult.error || reactionsResult.error) {
+      setError(humanizeError(membersResult.error || cardsResult.error || eventsResult.error || commentsResult.error || reactionsResult.error));
       return;
     }
     setMembers(membersResult.data || []);
     setCards(cardsResult.data || []);
     setEvents(eventsResult.data || []);
+    setComments(commentsResult.data || []);
+    setReactions(reactionsResult.data || []);
   }, [archive.id]);
 
   useEffect(() => { loadArchive(); }, [loadArchive]);
@@ -1107,7 +1338,7 @@ function ArchiveScreen({ profile, archive, onBack, onRefresh }) {
       </section>
       <section className="section-block">
         <div className="section-title"><div><span className="eyebrow">ARCHIVED MOMENTS</span><h3>保留的互動紀錄</h3></div><Clock3 size={20} /></div>
-        {events.length ? events.map((event) => <EventItem key={event.id} event={event} memberNames={memberNames} currentUserId={profile.id} readOnly showCard cardTitle={cards.find((card) => card.id === event.card_id)?.title || "已封存卡片"} />) : <div className="empty-inline">目前沒有蓋章紀錄。</div>}
+        {events.length ? events.map((event) => <EventItem key={event.id} event={event} memberNames={memberNames} currentUserId={profile.id} readOnly comments={comments} reactions={reactions} highlighted={archive.focusEventId === event.id} showCard cardTitle={cards.find((card) => card.id === event.card_id)?.title || "已封存卡片"} />) : <div className="empty-inline">目前沒有蓋章紀錄。</div>}
       </section>
     </main>
   );

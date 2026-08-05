@@ -65,5 +65,5 @@ export function isUndoable(event, userId, now = Date.now()) {
 
 export function isTerminalOutboxError(error) {
   const message = error?.message || "";
-  return /Card is already complete|Card is not active|undo window has expired|Stamp event not found|Only the assigned partner can stamp|Cannot undo after reward redemption/i.test(message);
+  return /Card is already complete|Card is not active|undo window has expired|Stamp event not found|Only the assigned partner can stamp|Cannot undo after reward redemption|Comment ID already belongs|A comment between|Reaction is not supported/i.test(message);
 }
