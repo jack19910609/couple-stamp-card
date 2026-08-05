@@ -19,6 +19,7 @@ type NotificationRecord = {
   stamp_event_id: string | null;
   kind: NotificationKind;
   data: Record<string, unknown> | null;
+  created_at: string;
 };
 
 type PushSubscriptionRecord = {
@@ -135,7 +136,7 @@ export default {
     });
     const { data: notification, error: notificationError } = await admin
       .from("user_notifications")
-      .select("id, recipient_id, actor_id, space_id, card_id, stamp_event_id, kind, data")
+      .select("id, recipient_id, actor_id, space_id, card_id, stamp_event_id, kind, data, created_at")
       .eq("id", body.notification_id)
       .maybeSingle<NotificationRecord>();
     if (notificationError) throw notificationError;
@@ -170,7 +171,9 @@ export default {
       .select("id, endpoint, p256dh, auth")
       .eq("user_id", notification.recipient_id)
       .eq("enabled", true)
-      .is("invalidated_at", null);
+      .is("invalidated_at", null)
+      // Do not send an old queued notification when a user enables Push later.
+      .lte("updated_at", notification.created_at);
     if (subscriptionsError) throw subscriptionsError;
     if (!subscriptions?.length) return Response.json({ skipped: "no_subscriptions" });
 

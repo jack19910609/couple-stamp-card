@@ -358,7 +358,7 @@ async function main() {
   console.log("11/15 Verifying Push subscription ownership, preferences, and RLS…");
   const verificationPushKey = createECDH("prime256v1");
   verificationPushKey.generateKeys();
-  const pushEndpoint = `https://example.com/.well-known/couple-stamp-${randomUUID()}`;
+  const pushEndpoint = `https://ruqghhdoatziepvbifnb.supabase.co/functions/v1/nonexistent-push-test-${randomUUID()}`;
   const enabledPushSubscription = singleData(await b.client.rpc("enable_push_notifications", {
     subscription_endpoint: pushEndpoint,
     subscription_p256dh: verificationPushKey.getPublicKey().toString("base64url"),
@@ -395,11 +395,14 @@ async function main() {
     .single(), "read Push verification notification");
   const invalidDelivery = await waitForCondition(async () => {
     const rows = resultData(await admin.from("push_delivery_log")
-      .select("id, status, attempts, subscription_id")
+      .select("id, status, attempts, subscription_id, response_status, error_code")
       .eq("notification_id", pushProbeNotification.id), "read Push delivery log");
     return rows[0] || null;
-  }, "deployed Edge Function Push delivery");
-  assert(invalidDelivery.status === "invalid" && invalidDelivery.attempts === 1, "Invalid Push endpoint was not retired after its first 404 response");
+  }, "deployed Edge Function Push delivery", 60_000);
+  assert(
+    invalidDelivery.status === "invalid" && invalidDelivery.attempts === 1,
+    `Invalid Push endpoint was not retired after its first 404 response (status=${invalidDelivery.status}, response=${invalidDelivery.response_status}, error=${invalidDelivery.error_code})`,
+  );
   const invalidatedSubscription = singleData(await admin.from("push_subscriptions")
     .select("enabled, invalidated_at")
     .eq("id", invalidDelivery.subscription_id)
