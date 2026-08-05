@@ -288,7 +288,7 @@ button.sync-badge { cursor: pointer; }
 .action-stack .secondary-button { width: 100%; }
 .activity-item { display: flex; align-items: center; gap: 9px; padding: 10px 2px; border-top: 1px dashed var(--line); }
 .activity-item:first-of-type { border-top: 0; }
-.activity-item > span { display: flex; min-width: 0; flex: 1; flex-direction: column; font-size: 12px; }
+.activity-item > .activity-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; font-size: 12px; }
 .activity-item small { margin-top: 2px; color: var(--muted); font-size: 10px; }
 .danger-panel { margin-top: 18px; padding: 14px; border: 1px solid rgba(133,40,31,.22); border-radius: 14px; color: #782e26; background: rgba(173,57,46,.09); font-size: 12px; line-height: 1.65; }
 .danger-panel p { margin: 5px 0 0; }

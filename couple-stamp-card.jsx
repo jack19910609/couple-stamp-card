@@ -553,7 +553,7 @@ function CardActivityItem({ activity, memberNames }) {
     reward_redeemed: "確認獎勵已兌換",
   };
   const name = memberNames[activity.actor_id] || "伴侶";
-  return <div className="activity-item"><InitialAvatar name={name} small /><span><strong>{name} {labels[activity.kind] || "更新了卡片"}</strong><small>{formatRelativeTime(activity.created_at)}</small></span></div>;
+  return <div className="activity-item"><InitialAvatar name={name} small /><span className="activity-copy"><strong>{name} {labels[activity.kind] || "更新了卡片"}</strong><small>{formatRelativeTime(activity.created_at)}</small></span></div>;
 }
 
 function StampMark({ index, small = false }) {
