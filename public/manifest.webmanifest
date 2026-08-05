@@ -1,0 +1,15 @@
+{
+  "name": "愛的集點卡",
+  "short_name": "愛的集點卡",
+  "description": "兩個人一起累積、即時分享每一個小小完成。",
+  "lang": "zh-Hant",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#efe3c8",
+  "theme_color": "#efe3c8",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

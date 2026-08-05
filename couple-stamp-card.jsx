@@ -318,6 +318,13 @@ function SyncBadge({ online, realtimeStatus, queueLength, syncing, error, onRetr
   return <span className="sync-badge"><RefreshCw className="spin" size={14} /> 正在連線</span>;
 }
 
+function useModalScrollLock() {
+  useEffect(() => {
+    document.body.classList.add("has-modal");
+    return () => document.body.classList.remove("has-modal");
+  }, []);
+}
+
 function CreateCardModal({ spaceId, userId, onClose, onCreated }) {
   const [title, setTitle] = useState("");
   const [actionLabel, setActionLabel] = useState("");
@@ -325,6 +332,7 @@ function CreateCardModal({ spaceId, userId, onClose, onCreated }) {
   const [reward, setReward] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  useModalScrollLock();
 
   const submit = async (event) => {
     event.preventDefault();
@@ -345,7 +353,7 @@ function CreateCardModal({ spaceId, userId, onClose, onCreated }) {
   return (
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="create-title">
-        <div className="modal-heading"><div><span className="eyebrow">共同累積</span><h2 id="create-title">建立新卡片</h2></div><button className="icon-button" onClick={onClose}><X /></button></div>
+        <div className="modal-heading"><div><span className="eyebrow">共同累積</span><h2 id="create-title">建立新卡片</h2></div><button className="icon-button" aria-label="關閉" onClick={onClose}><X /></button></div>
         <form onSubmit={submit} className="form-stack">
           <label>卡片名稱<input required maxLength={80} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：一起約會 10 次" autoFocus /></label>
           <label>什麼時候可以蓋章？<input required maxLength={100} value={actionLabel} onChange={(event) => setActionLabel(event.target.value)} placeholder="例如：完成一次約會" /></label>
@@ -363,10 +371,11 @@ function CreateCardModal({ spaceId, userId, onClose, onCreated }) {
 function StampModal({ card, onClose, onStamp }) {
   const [note, setNote] = useState("");
   const suggestions = [card.action_label, "今天一起完成了", "值得紀念的一次", "給我們一個愛心"];
+  useModalScrollLock();
   return (
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="stamp-title">
-        <div className="modal-heading"><div><span className="eyebrow">留下這次互動</span><h2 id="stamp-title">蓋一個章</h2></div><button className="icon-button" onClick={onClose}><X /></button></div>
+        <div className="modal-heading"><div><span className="eyebrow">留下這次互動</span><h2 id="stamp-title">蓋一個章</h2></div><button className="icon-button" aria-label="關閉" onClick={onClose}><X /></button></div>
         <p className="muted">這段話會和時間、蓋章者一起保存在「{card.title}」的紀錄裡。</p>
         <div className="suggestion-row">{suggestions.map((item) => <button key={item} className={note === item ? "chip is-active" : "chip"} onClick={() => setNote(item)}>{item}</button>)}</div>
         <label className="standalone-label">這次想記下什麼？<textarea maxLength={280} value={note} onChange={(event) => setNote(event.target.value)} placeholder="例如：下班後一起散步到河邊" autoFocus /></label>
@@ -658,6 +667,7 @@ function SettingsModal({ profile, onClose }) {
   const [name, setName] = useState(profile.display_name);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  useModalScrollLock();
   const save = async (event) => {
     event.preventDefault();
     setBusy(true);
@@ -669,7 +679,7 @@ function SettingsModal({ profile, onClose }) {
   return (
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="modal-sheet" role="dialog" aria-modal="true">
-        <div className="modal-heading"><div><span className="eyebrow">MY PROFILE</span><h2>設定</h2></div><button className="icon-button" onClick={onClose}><X /></button></div>
+        <div className="modal-heading"><div><span className="eyebrow">MY PROFILE</span><h2>設定</h2></div><button className="icon-button" aria-label="關閉" onClick={onClose}><X /></button></div>
         <form onSubmit={save} className="form-stack">
           <label>顯示名稱<input value={name} onChange={(event) => setName(event.target.value)} maxLength={40} required /></label>
           <ErrorNotice>{error}</ErrorNotice>

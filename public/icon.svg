@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title>愛的集點卡</title>
+  <rect width="512" height="512" rx="112" fill="#efe3c8"/>
+  <rect x="28" y="28" width="456" height="456" rx="96" fill="#f9f1df" stroke="#ad392e" stroke-width="12" stroke-dasharray="16 14"/>
+  <circle cx="256" cy="256" r="154" fill="#ad392e" stroke="#872a22" stroke-width="16"/>
+  <path d="M256 353c-17-19-116-95-116-164 0-42 29-72 68-72 24 0 42 13 48 30 7-17 25-30 48-30 40 0 68 30 68 72 0 69-99 145-116 164Z" fill="#fff9ec"/>
+  <text x="256" y="292" text-anchor="middle" fill="#ad392e" font-family="Noto Serif TC, Microsoft JhengHei, serif" font-size="116" font-weight="900">愛</text>
+</svg>
