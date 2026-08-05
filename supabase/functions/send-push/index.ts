@@ -28,6 +28,11 @@ type PushSubscriptionRecord = {
   auth: string;
 };
 
+type PushSendFailure = {
+  cause: unknown;
+  attempts: number;
+};
+
 function requiredSecret(name: string) {
   const value = Deno.env.get(name);
   if (!value) throw new Error(`Missing ${name}`);
@@ -75,25 +80,37 @@ function compactError(error: unknown) {
   return message.slice(0, 240);
 }
 
+function pushFailureCause(error: unknown) {
+  return error && typeof error === "object" && "cause" in error
+    ? (error as PushSendFailure).cause
+    : error;
+}
+
+function pushAttempts(error: unknown) {
+  const attempts = error && typeof error === "object"
+    ? Number((error as PushSendFailure).attempts)
+    : 3;
+  return Number.isInteger(attempts) && attempts >= 1 && attempts <= 3 ? attempts : 3;
+}
+
 async function pause(milliseconds: number) {
   await new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 async function sendWithRetries(subscription: PushSubscriptionRecord, payload: string) {
-  let lastError: unknown;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      return await webpush.sendNotification({
+      const response = await webpush.sendNotification({
         endpoint: subscription.endpoint,
         keys: { p256dh: subscription.p256dh, auth: subscription.auth },
       }, payload, { TTL: 120, urgency: "normal" });
+      return { response, attempts: attempt };
     } catch (error) {
-      lastError = error;
-      if (isInvalidSubscription(error) || attempt === 3) throw error;
+      if (isInvalidSubscription(error) || attempt === 3) throw { cause: error, attempts: attempt } satisfies PushSendFailure;
       await pause(300 * attempt * attempt);
     }
   }
-  throw lastError;
+  throw new Error("Push delivery unexpectedly exhausted without an error");
 }
 
 export default {
@@ -173,15 +190,16 @@ export default {
       if (claimError) throw claimError;
       if (!claim?.claimed) return { subscriptionId: subscription.id, status: "duplicate" };
       try {
-        const response = await sendWithRetries(subscription, payload);
+        const delivery = await sendWithRetries(subscription, payload);
         await admin.from("push_delivery_log").update({
-          status: "sent", attempts: 3, response_status: response.statusCode || 201, sent_at: new Date().toISOString(), error_code: null,
+          status: "sent", attempts: delivery.attempts, response_status: delivery.response.statusCode || 201, sent_at: new Date().toISOString(), error_code: null,
         }).eq("id", claim.delivery_id);
         return { subscriptionId: subscription.id, status: "sent" };
       } catch (error) {
-        const invalid = isInvalidSubscription(error);
+        const cause = pushFailureCause(error);
+        const invalid = isInvalidSubscription(cause);
         await admin.from("push_delivery_log").update({
-          status: invalid ? "invalid" : "failed", attempts: 3, response_status: responseStatus(error), error_code: compactError(error),
+          status: invalid ? "invalid" : "failed", attempts: pushAttempts(error), response_status: responseStatus(cause), error_code: compactError(cause),
         }).eq("id", claim.delivery_id);
         if (invalid) {
           await admin.from("push_subscriptions").update({
