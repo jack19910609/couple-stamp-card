@@ -229,6 +229,21 @@ function PairingScreen({ profile, membership, invite, onRefresh }) {
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
 
+  useEffect(() => {
+    if (!membership?.space_id) return undefined;
+
+    const checkPairingStatus = () => { onRefresh(); };
+    const timer = window.setInterval(checkPairingStatus, 2_000);
+    const checkWhenVisible = () => {
+      if (document.visibilityState === "visible") checkPairingStatus();
+    };
+    document.addEventListener("visibilitychange", checkWhenVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", checkWhenVisible);
+    };
+  }, [membership?.space_id, onRefresh]);
+
   const createInvite = async () => {
     setBusy(true);
     setError("");
@@ -267,6 +282,7 @@ function PairingScreen({ profile, membership, invite, onRefresh }) {
         <div className="pairing-illustration"><UserRound /><Heart /><UserRound /></div>
         <h2>{membership ? "等待另一半加入" : "建立你們的專屬空間"}</h2>
         <p className="muted">邀請碼只能使用一次，並會在建立後 24 小時失效。</p>
+        {membership && <p className="tiny">對方完成配對後，這個畫面會自動進入你們的首頁。</p>}
 
         {!membership && (
           <div className="segmented">
@@ -737,6 +753,31 @@ function AuthenticatedApp({ session }) {
   }, [session.user.id, session.user.user_metadata]);
 
   useEffect(() => { refreshIdentity(); }, [refreshIdentity]);
+
+  useEffect(() => {
+    if (!membership?.space_id) return undefined;
+
+    let cancelled = false;
+    let channel;
+    const subscribe = async () => {
+      await supabase.realtime.setAuth(session.access_token);
+      if (cancelled) return;
+      channel = supabase
+        .channel(`pairing-status-${membership.space_id}`)
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "couple_members", filter: `space_id=eq.${membership.space_id}` },
+          () => refreshIdentity(),
+        )
+        .subscribe();
+    };
+
+    subscribe();
+    return () => {
+      cancelled = true;
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, [membership?.space_id, refreshIdentity, session.access_token]);
 
   if (loading) return <LoadingScreen />;
   if (error && !profile) return <main className="app-shell app-shell--centered"><Brand /><ErrorNotice onRetry={refreshIdentity}>{error}</ErrorNotice></main>;

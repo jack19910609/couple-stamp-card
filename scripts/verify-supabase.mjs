@@ -80,14 +80,26 @@ async function main() {
     createTestUser("expiry"),
   ]);
 
-  console.log("2/8 Verifying one-time six-digit pairing…");
+  console.log("2/8 Verifying realtime pairing completion and one-time six-digit codes…");
   const inviteRows = resultData(await a.client.rpc("create_pairing_invite"), "create pairing invite");
   const invite = inviteRows?.[0];
   assert(invite && /^\d{6}$/.test(invite.invite_code), "RPC did not return a six-digit pairing code");
   assert(new Date(invite.invite_expires_at).getTime() > Date.now(), "Pairing code is not future-dated");
   createdSpaces.add(invite.invite_space_id);
+
+  let memberReceiver;
+  const memberPromise = waitForEvent((resolve) => { memberReceiver = resolve; }, "partner membership INSERT");
+  const memberChannel = a.client.channel(`verify-pairing-${randomUUID()}`).on(
+    "postgres_changes",
+    { event: "INSERT", schema: "public", table: "couple_members", filter: `space_id=eq.${invite.invite_space_id}` },
+    (payload) => memberReceiver?.(payload),
+  );
+  channels.push([a.client, memberChannel]);
+  await waitForChannel(memberChannel);
   const acceptedSpaceId = resultData(await b.client.rpc("accept_pairing_invite", { submitted_code: invite.invite_code }), "accept pairing invite");
   assert(acceptedSpaceId === invite.invite_space_id, "Partner joined a different Couple Space");
+  const memberPayload = await memberPromise;
+  assert(memberPayload.new.user_id === b.user.id, "Creator did not receive the partner membership in Realtime");
   const reused = await outsider.client.rpc("accept_pairing_invite", { submitted_code: invite.invite_code });
   assert(reused.error, "A used pairing code was accepted twice");
 
