@@ -200,6 +200,9 @@ button.sync-badge { cursor: pointer; }
 .progress-track span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--red), #d47154); transition: width .3s ease; }
 .contributions { display: flex; gap: 12px; margin: 12px 0; }
 .contributions > span { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; }
+.contributions--race { justify-content: space-between; }
+.contributions--race > span { flex: 1; }
+.contributions--race > span:last-child { justify-content: flex-end; }
 .reward-line { margin-top: auto; padding-top: 10px; border-top: 1px dashed var(--line); display: flex; align-items: center; gap: 6px; color: #7b612f; font-size: 11px; }
 .reward-status { width: fit-content; margin-top: 8px; display: inline-flex; align-items: center; gap: 5px; color: #7b612f; font-size: 10px; font-weight: 800; }
 .reward-status--done { color: #476a48; }
@@ -230,6 +233,7 @@ button.sync-badge { cursor: pointer; }
 .stamp-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; justify-items: center; }
 .stamp-slot { width: min(54px, 100%); aspect-ratio: 1; border-radius: 50%; border: 2px dashed rgba(173,57,46,.24); display: grid; place-items: center; background: repeating-linear-gradient(45deg, rgba(173,57,46,.025) 0 4px, transparent 4px 8px); }
 .stamp-mark { width: 88%; aspect-ratio: 1; border-radius: 47% 53% 51% 49%; display: grid; place-items: center; color: #fff4df; background: var(--red); border: 2px solid var(--red-dark); font: 900 clamp(13px, 4vw, 20px) "Noto Serif TC", serif; box-shadow: 0 2px 4px rgba(74,20,12,.3); animation: stamp-pop .4s ease-out; }
+.stamp-mark--gold { color: #fff9eb; background: var(--gold); border-color: #aa7b26; }
 @keyframes stamp-pop { 0% { transform: scale(1.9); opacity: 0; } 70% { transform: scale(.92); opacity: 1; } }
 .detail-progress { margin-top: 18px; text-align: center; color: var(--muted); font-size: 13px; }
 .detail-progress strong { color: var(--red); font-size: 23px; font-family: "Noto Serif TC", serif; }
@@ -239,6 +243,24 @@ button.sync-badge { cursor: pointer; }
 .member-contribution-grid .avatar { grid-row: 1 / 3; }
 .member-contribution-grid span { font-size: 11px; color: var(--muted); }
 .member-contribution-grid strong { font-size: 13px; }
+.competition-race { display: grid; gap: 14px; }
+.race-lane { padding: 13px; border: 1px solid rgba(173,57,46,.18); border-radius: 16px; background: rgba(255,249,236,.72); }
+.race-lane--gold { border-color: rgba(170,123,38,.32); background: rgba(208,163,69,.08); }
+.race-lane--winner { border-width: 2px; box-shadow: 0 5px 12px rgba(173,57,46,.12); }
+.race-lane__header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 11px; }
+.race-lane__identity { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.race-lane__identity strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.race-lane__identity > span:last-child { border-radius: 999px; padding: 2px 5px; color: var(--red); background: rgba(173,57,46,.1); font-size: 9px; font-weight: 800; }
+.race-lane__score { display: flex; flex: 0 0 auto; align-items: baseline; gap: 2px; color: var(--muted); font-size: 11px; }
+.race-lane__score > strong { color: var(--red); font: 900 24px/1 "Noto Serif TC", serif; }
+.race-lane--gold .race-lane__score > strong { color: #9b7126; }
+.race-lane__score > em { margin-left: 5px; border-radius: 999px; padding: 3px 5px; color: #fff9eb; background: var(--red); font-size: 9px; font-style: normal; font-weight: 800; }
+.race-lane--gold .race-lane__score > em { color: #5c431b; background: #efd69c; }
+.race-stamp-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; justify-items: center; }
+.race-stamp-slot { width: min(44px, 100%); aspect-ratio: 1; border: 1.5px dashed rgba(173,57,46,.24); border-radius: 50%; display: grid; place-items: center; background: rgba(255,249,236,.5); }
+.race-lane--gold .race-stamp-slot { border-color: rgba(170,123,38,.3); }
+.race-lane__progress { height: 6px; margin-top: 10px; }
+.race-lane--gold .race-lane__progress span { background: linear-gradient(90deg, #b8872e, #e4be65); }
 .reward-box { display: flex; align-items: center; gap: 12px; margin: 16px 0; padding: 13px; border-radius: 13px; color: #775923; background: rgba(208,163,69,.14); border: 1px solid rgba(208,163,69,.25); }
 .reward-box > span { display: flex; flex-direction: column; }
 .reward-box small { font-size: 10px; }

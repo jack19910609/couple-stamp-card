@@ -556,22 +556,54 @@ function CardActivityItem({ activity, memberNames }) {
   return <div className="activity-item"><InitialAvatar name={name} small /><span className="activity-copy"><strong>{name} {labels[activity.kind] || "更新了卡片"}</strong><small>{formatRelativeTime(activity.created_at)}</small></span></div>;
 }
 
-function StampMark({ index, small = false }) {
+function StampMark({ index, tone = "red" }) {
   const rotations = [-7, 5, -10, 8, -4, 9, -6, 4, -9, 6];
-  return <span className={`stamp-mark ${small ? "stamp-mark--small" : ""}`} style={{ transform: `rotate(${rotations[index % rotations.length]}deg)` }}>愛</span>;
+  return <span className={`stamp-mark stamp-mark--${tone}`} style={{ transform: `rotate(${rotations[index % rotations.length]}deg)` }}>愛</span>;
+}
+
+function CompetitionRace({ members, contributions, target, winnerId, currentUserId }) {
+  const scores = members.map((member) => contributions[member.user_id] || 0);
+  const leadingScore = Math.max(0, ...scores);
+  const leaderCount = scores.filter((score) => score === leadingScore && score > 0).length;
+
+  return (
+    <div className="competition-race" aria-label="競賽雙方進度">
+      {members.map((member) => {
+        const score = contributions[member.user_id] || 0;
+        const isWinner = winnerId === member.user_id;
+        const isLeader = !winnerId && score === leadingScore && leadingScore > 0;
+        const status = isWinner ? "獲勝" : isLeader ? (leaderCount > 1 ? "並列領先" : "目前領先") : null;
+        const tone = member.user_id === currentUserId ? "red" : "gold";
+        const name = member.profile?.display_name || "伴侶";
+        return (
+          <section className={`race-lane race-lane--${tone}${isWinner ? " race-lane--winner" : ""}`} key={member.user_id}>
+            <div className="race-lane__header">
+              <div className="race-lane__identity"><InitialAvatar name={name} /><strong>{name}</strong>{member.user_id === currentUserId && <span>你</span>}</div>
+              <div className="race-lane__score"><strong>{score}</strong><span> / {target}</span>{status && <em>{status}</em>}</div>
+            </div>
+            <div className="race-stamp-grid" aria-label={`${name} 已累積 ${score} / ${target} 點`}>
+              {Array.from({ length: target }).map((_, index) => <span className="race-stamp-slot" key={index}>{index < score && <StampMark index={index} tone={tone} />}</span>)}
+            </div>
+            <div className="progress-track race-lane__progress"><span style={{ width: `${Math.min(100, (score / target) * 100)}%` }} /></div>
+          </section>
+        );
+      })}
+    </div>
+  );
 }
 
 function CardTile({ card, events, memberNames, currentUserId, onOpen }) {
   const progress = cardProgress(card, events);
   const mode = progress.mode;
-  const headlineProgress = mode === "competition" ? `領先 ${progress.count}/${progress.target}` : `${progress.count}/${progress.target}`;
+  const competitionScores = Object.keys(memberNames).map((id) => progress.contributions[id] || 0);
+  const headlineProgress = mode === "competition" ? `比分 ${competitionScores.join(" : ")}` : `${progress.count}/${progress.target}`;
   return (
     <button className="card-tile" onClick={onOpen}>
       <div className="card-tile__top"><span className="mode-pill"><ModeIcon mode={mode} /> {CARD_MODE_LABELS[mode]}</span><span>{headlineProgress}</span></div>
       <h3>{card.title}</h3>
       <p>{card.action_label}</p>
-      <div className="progress-track"><span style={{ width: `${Math.min(100, (progress.count / progress.target) * 100)}%` }} /></div>
-      <div className="contributions">
+      {mode !== "competition" && <div className="progress-track"><span style={{ width: `${Math.min(100, (progress.count / progress.target) * 100)}%` }} /></div>}
+      <div className={`contributions ${mode === "competition" ? "contributions--race" : ""}`}>
         {Object.entries(memberNames).map(([id, name]) => <span key={id}><InitialAvatar name={name} small /> {progress.contributions[id] || 0}</span>)}
       </div>
       <div className="reward-line"><Gift size={14} /> {card.reward}</div>
@@ -851,16 +883,18 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
           <div className="detail-heading"><span className="mode-pill"><ModeIcon mode={selectedProgress.mode} /> {CARD_MODE_LABELS[selectedProgress.mode]}</span><button className="detail-actions" onClick={() => setCardActionsOpen(true)} aria-label="管理卡片"><Settings size={17} /></button><h2>{selectedCard.title}</h2><p>{selectedCard.action_label}</p></div>
           <section className="stamp-card">
             {selectedProgress.complete && <span className="complete-ribbon complete-ribbon--large">{selectedProgress.mode === "competition" ? "勝負已定！" : "集滿了！"}</span>}
-            <div className="stamp-grid">
-              {Array.from({ length: selectedCard.target_count }).map((_, index) => (
-                <span className="stamp-slot" key={index}>{index < selectedProgress.count && <StampMark index={index} />}</span>
-              ))}
-            </div>
-            <div className="detail-progress"><strong>{selectedProgress.count}</strong> / {selectedProgress.target} {selectedProgress.mode === "competition" ? "領先次數" : "次"}</div>
-            <div className="progress-track progress-track--large"><span style={{ width: `${Math.min(100, (selectedProgress.count / selectedProgress.target) * 100)}%` }} /></div>
-            <div className="member-contribution-grid">
-              {members.map((member) => <div key={member.user_id}><InitialAvatar name={member.profile?.display_name} /><span>{member.profile?.display_name}</span><strong>{selectedProgress.contributions[member.user_id] || 0} 次</strong></div>)}
-            </div>
+            {selectedProgress.mode === "competition" ? <CompetitionRace members={members} contributions={selectedProgress.contributions} target={selectedProgress.target} winnerId={selectedCard.winner_id} currentUserId={user.id} /> : <>
+              <div className="stamp-grid">
+                {Array.from({ length: selectedCard.target_count }).map((_, index) => (
+                  <span className="stamp-slot" key={index}>{index < selectedProgress.count && <StampMark index={index} />}</span>
+                ))}
+              </div>
+              <div className="detail-progress"><strong>{selectedProgress.count}</strong> / {selectedProgress.target} 次</div>
+              <div className="progress-track progress-track--large"><span style={{ width: `${Math.min(100, (selectedProgress.count / selectedProgress.target) * 100)}%` }} /></div>
+              <div className="member-contribution-grid">
+                {members.map((member) => <div key={member.user_id}><InitialAvatar name={member.profile?.display_name} /><span>{member.profile?.display_name}</span><strong>{selectedProgress.contributions[member.user_id] || 0} 次</strong></div>)}
+              </div>
+            </>}
             {selectedProgress.mode === "personal" && <p className="mode-explainer">由 {memberNames[selectedCard.participant_id] || "指定伴侶"} 累積這張個人卡。</p>}
             {selectedProgress.mode === "competition" && selectedCard.winner_id && <p className="mode-explainer mode-explainer--winner"><Medal size={16} /> {memberNames[selectedCard.winner_id] || "伴侶"} 率先達成目標。</p>}
             <div className="reward-box"><Gift /><span><small>完成獎勵</small><strong>{selectedCard.reward}</strong></span></div>
