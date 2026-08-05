@@ -32,6 +32,10 @@ function humanizeError(error) {
     [/already belong to a Couple Space/i, "你已經加入其他雙人空間"],
     [/already paired/i, "這個雙人空間已經完成配對"],
     [/own pairing code/i, "不能接受自己建立的配對碼"],
+    [/Both people must be unpaired before reconnecting/i, "你們必須都還沒有新的配對，才能重新連結"],
+    [/Recovery is only available to the original two people/i, "只有原本的兩人可以重新連結"],
+    [/The recovery period has ended/i, "這段關係的 30 天恢復期限已結束"],
+    [/No active Couple Space found/i, "找不到可結束的共同空間"],
     [/undo window has expired/i, "十分鐘的復原時間已結束"],
     [/Card is already complete/i, "這張卡已經集滿"],
   ];
@@ -222,7 +226,7 @@ function ProfileGate({ profile, onSaved }) {
   );
 }
 
-function PairingScreen({ profile, membership, invite, onRefresh }) {
+function PairingScreen({ profile, membership, invite, archives, onOpenArchive, onRefresh }) {
   const [mode, setMode] = useState(membership ? "invite" : "invite");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
@@ -314,6 +318,13 @@ function PairingScreen({ profile, membership, invite, onRefresh }) {
         )}
         <ErrorNotice>{error}</ErrorNotice>
       </section>
+      {archives.length > 0 && (
+        <section className="archive-preview">
+          <div><span className="eyebrow">SAVED MEMORIES</span><h3>封存回憶</h3><p className="tiny">只有你與原本的伴侶可以查看這些紀錄。</p>
+            <div className="archive-preview__list">{archives.map((archive, index) => <button className="text-button" key={archive.id} onClick={() => onOpenArchive(archive)}>封存空間 {index + 1}{archive.ended_at ? ` · ${formatRelativeTime(archive.ended_at)}` : ""}</button>)}</div>
+          </div>
+        </section>
+      )}
     </main>
   );
 }
@@ -423,7 +434,7 @@ function CardTile({ card, events, memberNames, onOpen }) {
   );
 }
 
-function EventItem({ event, memberNames, currentUserId, onUndo, showCard, cardTitle }) {
+function EventItem({ event, memberNames, currentUserId, onUndo, showCard, cardTitle, readOnly = false }) {
   const undone = Boolean(event.undone_at);
   const name = memberNames[event.actor_id] || "伴侶";
   return (
@@ -435,18 +446,19 @@ function EventItem({ event, memberNames, currentUserId, onUndo, showCard, cardTi
         <p>{event.note}</p>
         <span className="event-time">{event.pending ? "等待同步" : formatRelativeTime(event.undone_at || event.occurred_at)}</span>
       </div>
-      {!undone && isUndoable(event, currentUserId) && <button className="undo-button" onClick={() => onUndo(event)}><Undo2 size={14} /> 復原</button>}
+      {!readOnly && !undone && isUndoable(event, currentUserId) && <button className="undo-button" onClick={() => onUndo(event)}><Undo2 size={14} /> 復原</button>}
     </div>
   );
 }
 
-function Dashboard({ user, accessToken, profile, space, members }) {
+function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, onRelationshipChanged }) {
   const [cards, setCards] = useState([]);
   const [events, setEvents] = useState([]);
   const [selectedCardId, setSelectedCardId] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [stampOpen, setStampOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [endSpaceOpen, setEndSpaceOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [realtimeStatus, setRealtimeStatus] = useState("CONNECTING");
@@ -608,6 +620,12 @@ function Dashboard({ user, accessToken, profile, space, members }) {
     setSelectedCardId(card.id);
   };
 
+  const endSpace = async () => {
+    const { error: endError } = await supabase.rpc("end_couple_space");
+    if (endError) throw endError;
+    await onRelationshipChanged();
+  };
+
   if (loading) return <LoadingScreen />;
 
   const recentEvents = events.slice(0, 6);
@@ -674,12 +692,51 @@ function Dashboard({ user, accessToken, profile, space, members }) {
 
       {createOpen && <CreateCardModal spaceId={space.id} userId={user.id} onClose={() => setCreateOpen(false)} onCreated={handleCreated} />}
       {stampOpen && selectedCard && <StampModal card={selectedCard} onClose={() => setStampOpen(false)} onStamp={addStamp} />}
-      {settingsOpen && <SettingsModal profile={profile} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsModal profile={profile} space={space} onClose={() => setSettingsOpen(false)} onOpenArchive={onOpenArchive} onEndSpace={() => { setSettingsOpen(false); setEndSpaceOpen(true); }} />}
+      {endSpaceOpen && <EndSpaceModal onClose={() => setEndSpaceOpen(false)} onEnded={endSpace} />}
     </main>
   );
 }
 
-function SettingsModal({ profile, onClose }) {
+function EndSpaceModal({ onClose, onEnded }) {
+  const [confirmation, setConfirmation] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useModalScrollLock();
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (confirmation !== "結束") return;
+    setBusy(true);
+    setError("");
+    try {
+      await onEnded();
+    } catch (endError) {
+      setBusy(false);
+      setError(humanizeError(endError));
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="end-space-title">
+        <div className="modal-heading"><div><span className="eyebrow">RELATIONSHIP SETTINGS</span><h2 id="end-space-title">結束共同空間</h2></div><button className="icon-button" aria-label="關閉" onClick={onClose}><X /></button></div>
+        <div className="danger-panel">
+          <strong>這會立即停止雙方的共享與蓋章。</strong>
+          <p>進行中的卡片會封存為唯讀回憶；原本兩人可在 30 天內透過配對碼重新連結，但新伴侶永遠不會看到這些舊紀錄。</p>
+        </div>
+        <form onSubmit={submit} className="form-stack">
+          <label>輸入「結束」以確認<input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoFocus /></label>
+          <ErrorNotice>{error}</ErrorNotice>
+          <button className="primary-button danger-primary" disabled={busy || confirmation !== "結束"}>{busy ? "封存中…" : "結束並封存共同空間"}</button>
+          <button type="button" className="text-button centered" onClick={onClose} disabled={busy}>返回，不做變更</button>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function SettingsModal({ profile, space, onClose, onOpenArchive, onEndSpace }) {
   const [name, setName] = useState(profile.display_name);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -700,10 +757,105 @@ function SettingsModal({ profile, onClose }) {
           <label>顯示名稱<input value={name} onChange={(event) => setName(event.target.value)} maxLength={40} required /></label>
           <ErrorNotice>{error}</ErrorNotice>
           <button className="primary-button" disabled={busy}>{busy ? "儲存中…" : "儲存名稱"}</button>
+          <button type="button" className="secondary-button" onClick={() => { onClose(); onOpenArchive({ id: space.id, status: "active" }); }}>查看封存回憶</button>
+          <button type="button" className="secondary-button danger-button" onClick={onEndSpace}>結束共同空間</button>
           <button type="button" className="secondary-button danger-button" onClick={() => supabase.auth.signOut()}><LogOut size={17} /> 登出帳號</button>
         </form>
       </section>
     </div>
+  );
+}
+
+function ArchiveScreen({ profile, archive, onBack, onRefresh }) {
+  const [members, setMembers] = useState([]);
+  const [cards, setCards] = useState([]);
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [recoveryInvite, setRecoveryInvite] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  const loadArchive = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    const [membersResult, cardsResult, eventsResult] = await Promise.all([
+      supabase.from("couple_members").select("user_id, joined_at, profile:profiles!couple_members_user_id_fkey(id, display_name, avatar_url)").eq("space_id", archive.id).order("joined_at"),
+      supabase.from("cards").select("*").eq("space_id", archive.id).eq("status", "archived").order("created_at", { ascending: false }),
+      supabase.from("stamp_events").select("*").eq("space_id", archive.id).order("occurred_at", { ascending: false }).limit(12),
+    ]);
+    setLoading(false);
+    if (membersResult.error || cardsResult.error || eventsResult.error) {
+      setError(humanizeError(membersResult.error || cardsResult.error || eventsResult.error));
+      return;
+    }
+    setMembers(membersResult.data || []);
+    setCards(cardsResult.data || []);
+    setEvents(eventsResult.data || []);
+  }, [archive.id]);
+
+  useEffect(() => { loadArchive(); }, [loadArchive]);
+
+  const createRecoveryInvite = async () => {
+    setBusy(true);
+    setError("");
+    const { data, error: rpcError } = await supabase.rpc("create_recovery_invite", { target_archived_space_id: archive.id });
+    setBusy(false);
+    if (rpcError) return setError(humanizeError(rpcError));
+    setRecoveryInvite(data?.[0] || null);
+    await onRefresh();
+  };
+
+  const copyRecoveryCode = async () => {
+    if (!recoveryInvite?.invite_code) return;
+    await navigator.clipboard.writeText(recoveryInvite.invite_code);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
+  };
+
+  if (loading) return <LoadingScreen />;
+
+  const memberNames = Object.fromEntries(members.map((member) => [member.user_id, member.profile?.display_name || "伴侶"]));
+  const partner = members.find((member) => member.user_id !== profile.id);
+  const canRecover = archive.status === "ended" && archive.recoverable_until && new Date(archive.recoverable_until).getTime() > Date.now();
+
+  return (
+    <main className="app-shell dashboard-shell archive-shell">
+      <Brand compact />
+      <button className="back-button" onClick={onBack}><ArrowLeft size={17} /> 返回目前狀態</button>
+      <section className="archive-hero">
+        <span className="eyebrow">PRIVATE, READ-ONLY MEMORIES</span>
+        <h2>{partner?.profile?.display_name ? `與 ${partner.profile.display_name} 的封存回憶` : "封存回憶"}</h2>
+        <p>{archive.status === "ended" ? "共同空間已結束，這些卡片與紀錄只開放給原本的兩人查看。" : "這裡保留已封存的卡片與互動紀錄。"}</p>
+      </section>
+      {error && <ErrorNotice onRetry={loadArchive}>{error}</ErrorNotice>}
+
+      {canRecover && (
+        <section className="section-block recovery-block">
+          <div><span className="eyebrow">RECONNECT WINDOW</span><h3>還能重新連結</h3><p className="tiny">期限至 {new Date(archive.recoverable_until).toLocaleString("zh-TW")}。重新連結會建立新的共同空間，這些回憶仍會保持封存。</p></div>
+          {recoveryInvite ? (
+            <div className="invite-panel">
+              <span className="field-caption">給原本伴侶的六位配對碼</span>
+              <strong className="invite-code">{recoveryInvite.invite_code}</strong>
+              <button className="secondary-button" onClick={copyRecoveryCode}><Copy size={17} /> {copied ? "已複製" : "複製配對碼"}</button>
+              <p className="tiny">有效至 {new Date(recoveryInvite.invite_expires_at).toLocaleString("zh-TW")}</p>
+            </div>
+          ) : <button className="secondary-button" disabled={busy} onClick={createRecoveryInvite}>{busy ? "建立中…" : "產生重新連結配對碼"}</button>}
+        </section>
+      )}
+
+      <section className="section-block">
+        <div className="section-title"><div><span className="eyebrow">ARCHIVED CARDS</span><h3>已封存的卡片</h3></div><Gift size={20} /></div>
+        {cards.length ? <div className="memory-grid">{cards.map((card) => {
+          const progress = cardProgress(card, events);
+          return <article className="memory-card" key={card.id}><span>{progress.count}/{progress.target} 次</span><h3>{card.title}</h3><p>{card.action_label}</p><div className="progress-track"><span style={{ width: `${Math.min(100, (progress.count / progress.target) * 100)}%` }} /></div><div className="reward-line"><Gift size={14} /> {card.reward}</div></article>;
+        })}</div> : <div className="empty-inline">目前沒有封存卡片。</div>}
+      </section>
+      <section className="section-block">
+        <div className="section-title"><div><span className="eyebrow">ARCHIVED MOMENTS</span><h3>保留的互動紀錄</h3></div><Clock3 size={20} /></div>
+        {events.length ? events.map((event) => <EventItem key={event.id} event={event} memberNames={memberNames} currentUserId={profile.id} readOnly showCard cardTitle={cards.find((card) => card.id === event.card_id)?.title || "已封存卡片"} />) : <div className="empty-inline">目前沒有蓋章紀錄。</div>}
+      </section>
+    </main>
   );
 }
 
@@ -712,6 +864,8 @@ function AuthenticatedApp({ session }) {
   const [membership, setMembership] = useState(null);
   const [members, setMembers] = useState([]);
   const [invite, setInvite] = useState(null);
+  const [archives, setArchives] = useState([]);
+  const [archiveView, setArchiveView] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -727,14 +881,21 @@ function AuthenticatedApp({ session }) {
     const resolvedProfile = profileResult.data || { id: userId, display_name: session.user.user_metadata?.display_name || "" };
     setProfile(resolvedProfile);
 
-    const membershipResult = await supabase.from("couple_members").select("space_id, joined_at").eq("user_id", userId).maybeSingle();
-    if (membershipResult.error) {
-      setError(humanizeError(membershipResult.error));
+    const [membershipResult, archivesResult] = await Promise.all([
+      supabase.from("couple_members").select("space_id, joined_at").eq("user_id", userId).is("departed_at", null).maybeSingle(),
+      supabase.from("couple_members").select("space_id, joined_at, departed_at, space:couple_spaces!couple_members_space_id_fkey(id, status, ended_at, ended_by, recoverable_until, created_at)").eq("user_id", userId).not("departed_at", "is", null).order("departed_at", { ascending: false }),
+    ]);
+    if (membershipResult.error || archivesResult.error) {
+      setError(humanizeError(membershipResult.error || archivesResult.error));
       setLoading(false);
       return;
     }
+    setArchives((archivesResult.data || []).map((item) => ({ id: item.space_id, joined_at: item.joined_at, departed_at: item.departed_at, ...(item.space || {}) })));
     setMembership(membershipResult.data);
     if (!membershipResult.data) {
+      // An explicit end makes any local stamp waiting for the former space
+      // inapplicable. Do not carry it into a later Couple Space.
+      writeQueue(userId, []);
       setMembers([]);
       setInvite(null);
       setLoading(false);
@@ -743,8 +904,8 @@ function AuthenticatedApp({ session }) {
 
     const spaceId = membershipResult.data.space_id;
     const [membersResult, inviteResult] = await Promise.all([
-      supabase.from("couple_members").select("user_id, joined_at, profile:profiles!couple_members_user_id_fkey(id, display_name, avatar_url)").eq("space_id", spaceId).order("joined_at"),
-      supabase.from("pairing_invites").select("*").eq("space_id", spaceId).is("used_at", null).is("revoked_at", null).gt("expires_at", new Date().toISOString()).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+      supabase.from("couple_members").select("user_id, joined_at, profile:profiles!couple_members_user_id_fkey(id, display_name, avatar_url)").eq("space_id", spaceId).is("departed_at", null).order("joined_at"),
+      supabase.from("pairing_invites").select("*").eq("space_id", spaceId).eq("is_recovery", false).is("used_at", null).is("revoked_at", null).gt("expires_at", new Date().toISOString()).order("created_at", { ascending: false }).limit(1).maybeSingle(),
     ]);
     if (membersResult.error || inviteResult.error) setError(humanizeError(membersResult.error || inviteResult.error));
     setMembers(membersResult.data || []);
@@ -753,6 +914,28 @@ function AuthenticatedApp({ session }) {
   }, [session.user.id, session.user.user_metadata]);
 
   useEffect(() => { refreshIdentity(); }, [refreshIdentity]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let channel;
+    const subscribe = async () => {
+      await supabase.realtime.setAuth(session.access_token);
+      if (cancelled) return;
+      channel = supabase
+        .channel(`identity-status-${session.user.id}`)
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "couple_members", filter: `user_id=eq.${session.user.id}` },
+          () => refreshIdentity(),
+        )
+        .subscribe();
+    };
+    subscribe();
+    return () => {
+      cancelled = true;
+      if (channel) supabase.removeChannel(channel);
+    };
+  }, [refreshIdentity, session.access_token, session.user.id]);
 
   useEffect(() => {
     if (!membership?.space_id) return undefined;
@@ -766,7 +949,7 @@ function AuthenticatedApp({ session }) {
         .channel(`pairing-status-${membership.space_id}`)
         .on(
           "postgres_changes",
-          { event: "INSERT", schema: "public", table: "couple_members", filter: `space_id=eq.${membership.space_id}` },
+          { event: "*", schema: "public", table: "couple_members", filter: `space_id=eq.${membership.space_id}` },
           () => refreshIdentity(),
         )
         .subscribe();
@@ -782,8 +965,9 @@ function AuthenticatedApp({ session }) {
   if (loading) return <LoadingScreen />;
   if (error && !profile) return <main className="app-shell app-shell--centered"><Brand /><ErrorNotice onRetry={refreshIdentity}>{error}</ErrorNotice></main>;
   if (!profile?.display_name) return <ProfileGate profile={profile} onSaved={(saved) => { setProfile(saved); refreshIdentity(); }} />;
-  if (!membership || members.length < 2) return <PairingScreen profile={profile} membership={membership} invite={invite} onRefresh={refreshIdentity} />;
-  return <Dashboard user={session.user} accessToken={session.access_token} profile={profile} space={{ id: membership.space_id }} members={members} />;
+  if (archiveView) return <ArchiveScreen profile={profile} archive={archiveView} onBack={() => setArchiveView(null)} onRefresh={refreshIdentity} />;
+  if (!membership || members.length < 2) return <PairingScreen profile={profile} membership={membership} invite={invite} archives={archives} onOpenArchive={setArchiveView} onRefresh={refreshIdentity} />;
+  return <Dashboard user={session.user} accessToken={session.access_token} profile={profile} space={{ id: membership.space_id, status: "active" }} members={members} onOpenArchive={setArchiveView} onRelationshipChanged={refreshIdentity} />;
 }
 
 export default function CoupleStampCard() {

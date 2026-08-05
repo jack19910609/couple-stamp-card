@@ -160,6 +160,11 @@ input::placeholder, textarea::placeholder { color: #b3a284; }
 .invite-code { color: var(--red); font: 900 38px/1 "Noto Serif TC", serif; letter-spacing: .2em; padding-left: .2em; }
 .code-input { text-align: center; font: 800 25px "Noto Serif TC", serif; letter-spacing: .25em; padding-left: .25em; }
 .join-form { margin-top: 14px; }
+.archive-preview { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 18px; padding: 16px; border: 1px dashed rgba(173,57,46,.32); border-radius: 17px; background: rgba(255,249,236,.7); }
+.archive-preview h3 { margin: 3px 0; font-size: 17px; }
+.archive-preview .secondary-button { flex: 0 0 auto; white-space: nowrap; }
+.archive-preview__list { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; margin-top: 10px; }
+.archive-preview__list .text-button { color: var(--red); }
 
 .topbar { background: rgba(249,241,223,.62); border: 1px solid rgba(74,51,35,.09); border-radius: 16px; padding: 10px 12px; backdrop-filter: blur(10px); }
 .couple-identity { display: flex; align-items: center; gap: 10px; }
@@ -269,6 +274,24 @@ button.sync-badge { cursor: pointer; }
 .chip { border: 1px solid rgba(173,57,46,.25); border-radius: 999px; padding: 7px 11px; color: var(--ink); background: transparent; font-size: 11px; cursor: pointer; }
 .chip.is-active { color: #fff8e8; border-color: var(--red); background: var(--red); }
 .standalone-label { margin-bottom: 16px; }
+.danger-panel { margin-top: 18px; padding: 14px; border: 1px solid rgba(133,40,31,.22); border-radius: 14px; color: #782e26; background: rgba(173,57,46,.09); font-size: 12px; line-height: 1.65; }
+.danger-panel p { margin: 5px 0 0; }
+.danger-primary { background: var(--red-dark); }
+
+.archive-hero { padding: 24px; border-radius: 22px; color: #fff8e8; background: linear-gradient(135deg, #5f4932, #82624a); box-shadow: 0 13px 28px rgba(74,51,35,.16); }
+.archive-hero .eyebrow { color: #ecd29d; }
+.archive-hero h2 { margin: 5px 0; font-size: 24px; }
+.archive-hero p { margin: 0; color: rgba(255,248,232,.82); font-size: 12px; line-height: 1.7; }
+.recovery-block { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.recovery-block h3 { margin: 3px 0 6px; }
+.recovery-block > .secondary-button { flex: 0 0 auto; }
+.recovery-block .invite-panel { flex: 0 1 270px; margin: 0; }
+.memory-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.memory-card { min-height: 170px; display: flex; flex-direction: column; gap: 8px; padding: 15px; border: 1px solid rgba(74,51,35,.12); border-radius: 16px; background: rgba(255,250,239,.76); }
+.memory-card > span { color: var(--muted); font-size: 11px; text-align: right; }
+.memory-card h3 { margin: 0; font-size: 16px; }
+.memory-card p { min-height: 32px; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.memory-card .reward-line { margin-top: auto; }
 
 @media (min-width: 760px) {
   .app-shell { padding-top: 34px; }
@@ -285,6 +308,9 @@ button.sync-badge { cursor: pointer; }
 
 @media (max-width: 560px) {
   .card-grid { grid-template-columns: 1fr; }
+  .memory-grid { grid-template-columns: 1fr; }
+  .archive-preview, .recovery-block { align-items: stretch; flex-direction: column; }
+  .archive-preview .secondary-button, .recovery-block > .secondary-button { width: 100%; }
 }
 
 @media (max-width: 430px) {

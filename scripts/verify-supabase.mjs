@@ -72,7 +72,7 @@ function waitForEvent(register, description) {
 }
 
 async function main() {
-  console.log("1/8 Creating isolated users…");
+  console.log("1/10 Creating isolated users…");
   const [a, b, outsider, expiryOwner] = await Promise.all([
     createTestUser("a"),
     createTestUser("b"),
@@ -80,7 +80,7 @@ async function main() {
     createTestUser("expiry"),
   ]);
 
-  console.log("2/8 Verifying realtime pairing completion and one-time six-digit codes…");
+  console.log("2/10 Verifying realtime pairing completion and one-time six-digit codes…");
   const inviteRows = resultData(await a.client.rpc("create_pairing_invite"), "create pairing invite");
   const invite = inviteRows?.[0];
   assert(invite && /^\d{6}$/.test(invite.invite_code), "RPC did not return a six-digit pairing code");
@@ -92,7 +92,7 @@ async function main() {
   const memberChannel = a.client.channel(`verify-pairing-${randomUUID()}`).on(
     "postgres_changes",
     { event: "INSERT", schema: "public", table: "couple_members", filter: `space_id=eq.${invite.invite_space_id}` },
-    (payload) => memberReceiver?.(payload),
+    (payload) => payload.new.user_id === b.user.id && memberReceiver?.(payload),
   );
   channels.push([a.client, memberChannel]);
   await waitForChannel(memberChannel);
@@ -103,7 +103,7 @@ async function main() {
   const reused = await outsider.client.rpc("accept_pairing_invite", { submitted_code: invite.invite_code });
   assert(reused.error, "A used pairing code was accepted twice");
 
-  console.log("3/8 Verifying expired pairing rejection…");
+  console.log("3/10 Verifying expired pairing rejection…");
   const expiryRows = resultData(await expiryOwner.client.rpc("create_pairing_invite"), "create expiry invite");
   const expiryInvite = expiryRows[0];
   createdSpaces.add(expiryInvite.invite_space_id);
@@ -111,7 +111,7 @@ async function main() {
   const expired = await outsider.client.rpc("accept_pairing_invite", { submitted_code: expiryInvite.invite_code });
   assert(expired.error, "An expired pairing code was accepted");
 
-  console.log("4/8 Creating and reading a shared card from both accounts…");
+  console.log("4/10 Creating and reading a shared card from both accounts…");
   const card = resultData(await a.client.from("cards").insert({
     space_id: invite.invite_space_id,
     created_by: a.user.id,
@@ -123,7 +123,7 @@ async function main() {
   const partnerCards = resultData(await b.client.from("cards").select("id").eq("id", card.id), "partner reads card");
   assert(partnerCards.length === 1, "Partner cannot read the shared card");
 
-  console.log("5/8 Verifying Realtime stamp insert…");
+  console.log("5/10 Verifying Realtime stamp insert…");
   const eventId = randomUUID();
   let insertReceiver;
   const insertPromise = waitForEvent((resolve) => { insertReceiver = resolve; }, "stamp INSERT");
@@ -145,7 +145,7 @@ async function main() {
   assert(insertPayload.new.id === eventId && insertPayload.new.actor_id === a.user.id, "Realtime INSERT has incorrect event data");
   assert(stamp.note === "A 留下的整合測試留言", "Stamp note was not preserved");
 
-  console.log("6/8 Verifying idempotent replay…");
+  console.log("6/10 Verifying idempotent replay…");
   resultData(await a.client.rpc("create_stamp_event", {
     event_id: eventId,
     target_card_id: card.id,
@@ -155,7 +155,7 @@ async function main() {
   const duplicateCheck = resultData(await b.client.from("stamp_events").select("id", { count: "exact" }).eq("id", eventId), "count replayed event");
   assert(duplicateCheck.length === 1, "Replaying an event created a duplicate stamp");
 
-  console.log("7/8 Verifying Realtime undo and audit history…");
+  console.log("7/10 Verifying Realtime undo and audit history…");
   let updateReceiver;
   const updatePromise = waitForEvent((resolve) => { updateReceiver = resolve; }, "stamp UPDATE");
   const updateChannel = b.client.channel(`verify-update-${randomUUID()}`).on(
@@ -169,7 +169,7 @@ async function main() {
   const updatePayload = await updatePromise;
   assert(updatePayload.new.undone_at && updatePayload.new.undone_by === a.user.id, "Realtime UPDATE did not preserve undo audit data");
 
-  console.log("8/8 Verifying outsider RLS isolation…");
+  console.log("8/10 Verifying outsider RLS isolation…");
   const outsiderRead = resultData(await outsider.client.from("cards").select("id").eq("id", card.id), "outsider card query");
   assert(outsiderRead.length === 0, "Outsider could read a Couple Space card");
   const outsiderWrite = await outsider.client.from("cards").insert({
@@ -181,6 +181,74 @@ async function main() {
     reward: "無",
   });
   assert(outsiderWrite.error, "Outsider could write to a Couple Space card");
+
+  console.log("9/10 Verifying realtime end, read-only archive, and blocked writes…");
+  let archiveReceiver;
+  const archivePromise = waitForEvent((resolve) => { archiveReceiver = resolve; }, "partner archive UPDATE");
+  const archiveChannel = b.client.channel(`verify-archive-${randomUUID()}`).on(
+    "postgres_changes",
+    { event: "UPDATE", schema: "public", table: "couple_members", filter: `space_id=eq.${invite.invite_space_id}` },
+    (payload) => payload.new.user_id === b.user.id && archiveReceiver?.(payload),
+  );
+  channels.push([b.client, archiveChannel]);
+  await waitForChannel(archiveChannel);
+  const endedSpaceId = resultData(await a.client.rpc("end_couple_space"), "end Couple Space");
+  assert(endedSpaceId === invite.invite_space_id, "Ended an unexpected Couple Space");
+  const archivePayload = await archivePromise;
+  assert(archivePayload.new.departed_at, "Partner did not receive the archive status in Realtime");
+  const archivedCard = resultData(await b.client.from("cards").select("id, status").eq("id", card.id).single(), "partner reads archived card");
+  assert(archivedCard.status === "archived", "Ending a space did not archive its cards");
+  const archiveMemberships = resultData(await b.client.from("couple_members")
+    .select("space_id, departed_at, space:couple_spaces!couple_members_space_id_fkey(id, status, recoverable_until)")
+    .eq("user_id", b.user.id)
+    .not("departed_at", "is", null), "read archive metadata");
+  assert(archiveMemberships.some((item) => item.space_id === invite.invite_space_id && item.space?.status === "ended" && item.space?.recoverable_until), "Archive metadata is unavailable to an original member");
+  const archivedWrite = await a.client.from("cards").insert({
+    space_id: invite.invite_space_id,
+    created_by: a.user.id,
+    title: "不該寫入封存空間",
+    action_label: "越權寫入",
+    target_count: 2,
+    reward: "無",
+  });
+  assert(archivedWrite.error, "A former member could create a card in an archived space");
+  const archivedStamp = await b.client.rpc("create_stamp_event", {
+    event_id: randomUUID(),
+    target_card_id: card.id,
+    event_note: "不該蓋章",
+    event_occurred_at: new Date().toISOString(),
+  });
+  assert(archivedStamp.error, "A former member could stamp an archived card");
+
+  console.log("10/10 Verifying original-partner-only recovery creates a fresh active space…");
+  const recoveryRows = resultData(await a.client.rpc("create_recovery_invite", { target_archived_space_id: invite.invite_space_id }), "create recovery invite");
+  const recoveryInvite = recoveryRows?.[0];
+  assert(recoveryInvite && /^\d{6}$/.test(recoveryInvite.invite_code), "Recovery RPC did not return a six-digit code");
+  const outsiderRecovery = await outsider.client.rpc("create_recovery_invite", { target_archived_space_id: invite.invite_space_id });
+  assert(outsiderRecovery.error, "A non-member could create a recovery code");
+  let recoveredMemberReceiver;
+  const recoveredMemberPromise = waitForEvent((resolve) => { recoveredMemberReceiver = resolve; }, "original creator recovery membership INSERT");
+  const recoveredMemberChannel = a.client.channel(`verify-recovery-${randomUUID()}`).on(
+    "postgres_changes",
+    { event: "INSERT", schema: "public", table: "couple_members", filter: `user_id=eq.${a.user.id}` },
+    (payload) => recoveredMemberReceiver?.(payload),
+  );
+  channels.push([a.client, recoveredMemberChannel]);
+  await waitForChannel(recoveredMemberChannel);
+  const recoveredSpaceId = resultData(await b.client.rpc("accept_pairing_invite", { submitted_code: recoveryInvite.invite_code }), "accept recovery invite");
+  createdSpaces.add(recoveredSpaceId);
+  assert(recoveredSpaceId !== invite.invite_space_id, "Recovery reused the archived space instead of creating a clean one");
+  const recoveredMemberPayload = await recoveredMemberPromise;
+  assert(recoveredMemberPayload.new.space_id === recoveredSpaceId, "Creator did not receive the recovered space in Realtime");
+  const recoveredCard = resultData(await a.client.from("cards").insert({
+    space_id: recoveredSpaceId,
+    created_by: a.user.id,
+    title: "重新開始的共同卡",
+    action_label: "完成一次重新開始測試",
+    target_count: 2,
+    reward: "新的回憶",
+  }).select().single(), "create card after recovery");
+  assert(recoveredCard.status === "active", "Recovered partners could not create a fresh active card");
 
   console.log("Supabase integration verification passed.");
 }
