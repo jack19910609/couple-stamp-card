@@ -1,4 +1,9 @@
 export const ACTIVE_CARD_STATUSES = new Set(["active"]);
+export const CARD_MODE_LABELS = {
+  personal: "個人卡",
+  shared: "共同卡",
+  competition: "競賽卡",
+};
 
 export function activeStampsForCard(events, cardId) {
   return events.filter((event) => event.card_id === cardId && !event.undone_at);
@@ -11,12 +16,25 @@ export function cardProgress(card, events) {
     return result;
   }, {});
 
+  const mode = card.mode || "shared";
+  const personalActive = mode === "personal"
+    ? active.filter((event) => event.actor_id === card.participant_id)
+    : active;
+  const competitionScores = mode === "competition" ? contributions : null;
+  const leadingCount = competitionScores ? Math.max(0, ...Object.values(competitionScores)) : personalActive.length;
+  const complete = mode === "competition"
+    ? Boolean(card.completed_at || card.winner_id || leadingCount >= card.target_count)
+    : Boolean(card.completed_at || personalActive.length >= card.target_count);
+
   return {
-    count: active.length,
+    mode,
+    count: leadingCount,
     target: card.target_count,
-    remaining: Math.max(0, card.target_count - active.length),
-    complete: active.length >= card.target_count,
+    remaining: Math.max(0, card.target_count - leadingCount),
+    complete,
     contributions,
+    winnerId: card.winner_id || null,
+    personalParticipantId: card.participant_id || null,
   };
 }
 
@@ -47,5 +65,5 @@ export function isUndoable(event, userId, now = Date.now()) {
 
 export function isTerminalOutboxError(error) {
   const message = error?.message || "";
-  return /Card is already complete|Card is not active|undo window has expired|Stamp event not found/i.test(message);
+  return /Card is already complete|Card is not active|undo window has expired|Stamp event not found|Only the assigned partner can stamp|Cannot undo after reward redemption/i.test(message);
 }

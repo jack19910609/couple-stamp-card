@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Archive,
   ArrowLeft,
   Check,
   Clock3,
   Copy,
+  CopyPlus,
   Gift,
   Heart,
   LogOut,
+  Medal,
+  Pencil,
   Plus,
   RefreshCw,
   Settings,
   Ticket,
+  Trophy,
   Undo2,
   UserRound,
   UsersRound,
@@ -19,7 +24,7 @@ import {
   X,
 } from "lucide-react";
 import { supabase, isSupabaseConfigured } from "./src/lib/supabase.js";
-import { cardProgress, formatRelativeTime, isTerminalOutboxError, isUndoable, upsertById } from "./src/lib/domain.js";
+import { CARD_MODE_LABELS, cardProgress, formatRelativeTime, isTerminalOutboxError, isUndoable, upsertById } from "./src/lib/domain.js";
 import { appendToQueue, readQueue, removeQueuedAction, writeQueue } from "./src/lib/offlineQueue.js";
 
 function humanizeError(error) {
@@ -36,6 +41,12 @@ function humanizeError(error) {
     [/Recovery is only available to the original two people/i, "只有原本的兩人可以重新連結"],
     [/The recovery period has ended/i, "這段關係的 30 天恢復期限已結束"],
     [/No active Couple Space found/i, "找不到可結束的共同空間"],
+    [/Only the assigned partner can stamp/i, "這張個人卡只能由指定的伴侶蓋章"],
+    [/Existing progress requires confirmation/i, "已有蓋章紀錄，請先確認規則變更的影響"],
+    [/Reward redemption is already in progress/i, "獎勵正在兌換流程中，暫時不能修改規則"],
+    [/Card reward is not ready/i, "卡片完成後才能申請兌換獎勵"],
+    [/other partner must confirm reward redemption/i, "需要由另一位伴侶確認已兌換"],
+    [/Cannot undo after reward redemption/i, "已進入獎勵兌換流程，不能再復原這個章"],
     [/undo window has expired/i, "十分鐘的復原時間已結束"],
     [/Card is already complete/i, "這張卡已經集滿"],
   ];
@@ -63,6 +74,25 @@ function ErrorNotice({ children, onRetry }) {
       {onRetry && <button onClick={onRetry}>重試</button>}
     </div>
   );
+}
+
+const CARD_MODE_DESCRIPTIONS = {
+  personal: "指定一人累積，另一人可以關注進度。",
+  shared: "兩人的章會累積到同一個共同目標。",
+  competition: "兩人各自累積，先達成目標者獲勝。",
+};
+
+function ModeIcon({ mode, size = 13 }) {
+  if (mode === "personal") return <UserRound size={size} />;
+  if (mode === "competition") return <Trophy size={size} />;
+  return <UsersRound size={size} />;
+}
+
+function RewardStatus({ card, currentUserId }) {
+  if (!card.completed_at && !card.winner_id) return null;
+  if (card.reward_state === "redeemed") return <span className="reward-status reward-status--done"><Check size={13} /> 已兌換</span>;
+  if (card.reward_state === "requested") return <span className="reward-status"><Clock3 size={13} /> {card.reward_requested_by === currentUserId ? "等待伴侶確認" : "待你確認兌換"}</span>;
+  return <span className="reward-status"><Gift size={13} /> 可申請兌換</span>;
 }
 
 function LoadingScreen() {
@@ -352,7 +382,9 @@ function useModalScrollLock() {
   }, []);
 }
 
-function CreateCardModal({ spaceId, userId, onClose, onCreated }) {
+function CreateCardModal({ spaceId, userId, members, onClose, onCreated }) {
+  const [mode, setMode] = useState("shared");
+  const [participantId, setParticipantId] = useState(userId);
   const [title, setTitle] = useState("");
   const [actionLabel, setActionLabel] = useState("");
   const [targetCount, setTargetCount] = useState(10);
@@ -364,29 +396,40 @@ function CreateCardModal({ spaceId, userId, onClose, onCreated }) {
   const submit = async (event) => {
     event.preventDefault();
     setBusy(true);
-    const { data, error: insertError } = await supabase.from("cards").insert({
-      space_id: spaceId,
-      created_by: userId,
-      title: title.trim(),
-      action_label: actionLabel.trim(),
-      target_count: Number(targetCount),
-      reward: reward.trim(),
-    }).select().single();
+    const { data, error: insertError } = await supabase.rpc("create_card", {
+      target_space_id: spaceId,
+      card_mode: mode,
+      card_participant_id: mode === "personal" ? participantId : null,
+      card_title: title.trim(),
+      card_action_label: actionLabel.trim(),
+      card_target_count: Number(targetCount),
+      card_reward: reward.trim(),
+    });
     setBusy(false);
     if (insertError) return setError(humanizeError(insertError));
-    onCreated(data);
+    onCreated(Array.isArray(data) ? data[0] : data);
   };
 
   return (
     <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="create-title">
-        <div className="modal-heading"><div><span className="eyebrow">共同累積</span><h2 id="create-title">建立新卡片</h2></div><button className="icon-button" aria-label="關閉" onClick={onClose}><X /></button></div>
+        <div className="modal-heading"><div><span className="eyebrow">NEW LITTLE GOAL</span><h2 id="create-title">建立新卡片</h2></div><button className="icon-button" aria-label="關閉" onClick={onClose}><X /></button></div>
         <form onSubmit={submit} className="form-stack">
+          <label>卡片模式
+            <select value={mode} onChange={(event) => setMode(event.target.value)}>
+              {Object.entries(CARD_MODE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </label>
+          {mode === "personal" && <label>這張卡由誰累積？
+            <select value={participantId} onChange={(event) => setParticipantId(event.target.value)}>
+              {members.map((member) => <option key={member.user_id} value={member.user_id}>{member.profile?.display_name || "伴侶"}</option>)}
+            </select>
+          </label>}
           <label>卡片名稱<input required maxLength={80} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="例如：一起約會 10 次" autoFocus /></label>
           <label>什麼時候可以蓋章？<input required maxLength={100} value={actionLabel} onChange={(event) => setActionLabel(event.target.value)} placeholder="例如：完成一次約會" /></label>
-          <label>共同目標次數<input type="number" min="2" max="100" required value={targetCount} onChange={(event) => setTargetCount(event.target.value)} /></label>
+          <label>{mode === "competition" ? "每人目標次數" : "目標次數"}<input type="number" min="2" max="100" required value={targetCount} onChange={(event) => setTargetCount(event.target.value)} /></label>
           <label>完成獎勵<input required maxLength={120} value={reward} onChange={(event) => setReward(event.target.value)} placeholder="例如：一起去週末小旅行" /></label>
-          <div className="rule-preview"><UsersRound size={18} /><span>兩人的章會累積到同一個進度，共同達成 {Number(targetCount) || 0} 次。</span></div>
+          <div className="rule-preview"><ModeIcon mode={mode} size={18} /><span>{CARD_MODE_DESCRIPTIONS[mode]}{mode === "competition" ? ` 率先完成 ${Number(targetCount) || 0} 次者獲勝。` : ""}</span></div>
           <ErrorNotice>{error}</ErrorNotice>
           <button className="primary-button" disabled={busy}>{busy ? "建立中…" : "建立並同步給伴侶"}</button>
         </form>
@@ -412,16 +455,119 @@ function StampModal({ card, onClose, onStamp }) {
   );
 }
 
+function EditCardModal({ card, members, events, onClose, onSaved }) {
+  const [mode, setMode] = useState(card.mode || "shared");
+  const [participantId, setParticipantId] = useState(card.participant_id || members[0]?.user_id || "");
+  const [title, setTitle] = useState(card.title);
+  const [actionLabel, setActionLabel] = useState(card.action_label);
+  const [targetCount, setTargetCount] = useState(card.target_count);
+  const [reward, setReward] = useState(card.reward);
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const hasHistory = events.some((event) => event.card_id === card.id);
+  useModalScrollLock();
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (hasHistory && !acknowledged) return setError("請先確認了解這會影響已有進度的解讀。");
+    setBusy(true);
+    setError("");
+    const { data, error: rpcError } = await supabase.rpc("update_card_rules", {
+      target_card_id: card.id,
+      next_mode: mode,
+      next_participant_id: mode === "personal" ? participantId : null,
+      next_title: title.trim(),
+      next_action_label: actionLabel.trim(),
+      next_target_count: Number(targetCount),
+      next_reward: reward.trim(),
+      acknowledge_existing_progress: acknowledged,
+    });
+    setBusy(false);
+    if (rpcError) return setError(humanizeError(rpcError));
+    onSaved(Array.isArray(data) ? data[0] : data);
+  };
+
+  return (
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="edit-card-title">
+        <div className="modal-heading"><div><span className="eyebrow">CARD RULES</span><h2 id="edit-card-title">編輯卡片規則</h2></div><button className="icon-button" aria-label="關閉" onClick={onClose}><X /></button></div>
+        <form onSubmit={submit} className="form-stack">
+          <label>卡片模式<select value={mode} onChange={(event) => setMode(event.target.value)}>{Object.entries(CARD_MODE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          {mode === "personal" && <label>累積者<select value={participantId} onChange={(event) => setParticipantId(event.target.value)}>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.profile?.display_name || "伴侶"}</option>)}</select></label>}
+          <label>卡片名稱<input required maxLength={80} value={title} onChange={(event) => setTitle(event.target.value)} /></label>
+          <label>蓋章條件<input required maxLength={100} value={actionLabel} onChange={(event) => setActionLabel(event.target.value)} /></label>
+          <label>{mode === "competition" ? "每人目標次數" : "目標次數"}<input type="number" min="2" max="100" required value={targetCount} onChange={(event) => setTargetCount(event.target.value)} /></label>
+          <label>完成獎勵<input required maxLength={120} value={reward} onChange={(event) => setReward(event.target.value)} /></label>
+          {hasHistory && <label className="impact-confirm"><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} /> 我了解調整模式、參加者或目標會改變既有蓋章的進度解讀；系統會保留這次規則變更紀錄。</label>}
+          <ErrorNotice>{error}</ErrorNotice>
+          <button className="primary-button" disabled={busy}>{busy ? "儲存中…" : "儲存規則變更"}</button>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function CardActionsModal({ card, onClose, onEdit, onCopy, onArchive }) {
+  const [confirmArchive, setConfirmArchive] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useModalScrollLock();
+  const archive = async () => {
+    if (!confirmArchive) return setConfirmArchive(true);
+    setBusy(true);
+    setError("");
+    try { await onArchive(); } catch (archiveError) { setBusy(false); setError(humanizeError(archiveError)); }
+  };
+  const copy = async () => {
+    setBusy(true);
+    setError("");
+    try { await onCopy(); } catch (copyError) { setBusy(false); setError(humanizeError(copyError)); }
+  };
+  return (
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="card-actions-title">
+        <div className="modal-heading"><div><span className="eyebrow">CARD LIFECYCLE</span><h2 id="card-actions-title">管理「{card.title}」</h2></div><button className="icon-button" aria-label="關閉" onClick={onClose}><X /></button></div>
+        <div className="action-stack">
+          <button className="secondary-button" disabled={busy || card.reward_state === "requested" || card.reward_state === "redeemed"} onClick={onEdit}><Pencil size={17} /> 編輯規則</button>
+          <button className="secondary-button" disabled={busy} onClick={copy}><CopyPlus size={17} /> 複製成新一輪</button>
+          <button className="secondary-button danger-button" disabled={busy} onClick={archive}><Archive size={17} /> {confirmArchive ? "再次點擊，確認封存為唯讀" : "封存這張卡片"}</button>
+        </div>
+        <p className="tiny">封存不會刪除紀錄，會保留在你們的封存回憶中。</p>
+        <ErrorNotice>{error}</ErrorNotice>
+      </section>
+    </div>
+  );
+}
+
+function CardActivityItem({ activity, memberNames }) {
+  const labels = {
+    created: "建立了這張卡片",
+    rules_changed: "更新了卡片規則",
+    completed: "完成了這張卡片",
+    competition_won: "鎖定了競賽結果",
+    reopened: "復原蓋章並重新開啟卡片",
+    archived: "封存了這張卡片",
+    copied: "複製了這張卡片",
+    reward_requested: "申請兌換獎勵",
+    reward_redeemed: "確認獎勵已兌換",
+  };
+  const name = memberNames[activity.actor_id] || "伴侶";
+  return <div className="activity-item"><InitialAvatar name={name} small /><span><strong>{name} {labels[activity.kind] || "更新了卡片"}</strong><small>{formatRelativeTime(activity.created_at)}</small></span></div>;
+}
+
 function StampMark({ index, small = false }) {
   const rotations = [-7, 5, -10, 8, -4, 9, -6, 4, -9, 6];
   return <span className={`stamp-mark ${small ? "stamp-mark--small" : ""}`} style={{ transform: `rotate(${rotations[index % rotations.length]}deg)` }}>愛</span>;
 }
 
-function CardTile({ card, events, memberNames, onOpen }) {
+function CardTile({ card, events, memberNames, currentUserId, onOpen }) {
   const progress = cardProgress(card, events);
+  const mode = progress.mode;
+  const headlineProgress = mode === "competition" ? `領先 ${progress.count}/${progress.target}` : `${progress.count}/${progress.target}`;
   return (
     <button className="card-tile" onClick={onOpen}>
-      <div className="card-tile__top"><span className="mode-pill"><UsersRound size={13} /> 共同卡</span><span>{progress.count}/{progress.target}</span></div>
+      <div className="card-tile__top"><span className="mode-pill"><ModeIcon mode={mode} /> {CARD_MODE_LABELS[mode]}</span><span>{headlineProgress}</span></div>
       <h3>{card.title}</h3>
       <p>{card.action_label}</p>
       <div className="progress-track"><span style={{ width: `${Math.min(100, (progress.count / progress.target) * 100)}%` }} /></div>
@@ -429,7 +575,8 @@ function CardTile({ card, events, memberNames, onOpen }) {
         {Object.entries(memberNames).map(([id, name]) => <span key={id}><InitialAvatar name={name} small /> {progress.contributions[id] || 0}</span>)}
       </div>
       <div className="reward-line"><Gift size={14} /> {card.reward}</div>
-      {progress.complete && <span className="complete-ribbon">集滿了</span>}
+      <RewardStatus card={card} currentUserId={currentUserId} />
+      {progress.complete && <span className="complete-ribbon">{mode === "competition" ? "勝負已定" : "集滿了"}</span>}
     </button>
   );
 }
@@ -454,9 +601,12 @@ function EventItem({ event, memberNames, currentUserId, onUndo, showCard, cardTi
 function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, onRelationshipChanged }) {
   const [cards, setCards] = useState([]);
   const [events, setEvents] = useState([]);
+  const [activities, setActivities] = useState([]);
   const [selectedCardId, setSelectedCardId] = useState(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [stampOpen, setStampOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [cardActionsOpen, setCardActionsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [endSpaceOpen, setEndSpaceOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -474,13 +624,14 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
 
   const loadData = useCallback(async () => {
     setError("");
-    const [cardsResult, eventsResult] = await Promise.all([
+    const [cardsResult, eventsResult, activitiesResult] = await Promise.all([
       supabase.from("cards").select("*").eq("space_id", space.id).eq("status", "active").order("created_at", { ascending: false }),
       supabase.from("stamp_events").select("*").eq("space_id", space.id).order("occurred_at", { ascending: false }),
+      supabase.from("card_activity_events").select("*").eq("space_id", space.id).order("created_at", { ascending: false }),
     ]);
     setLoading(false);
-    if (cardsResult.error || eventsResult.error) {
-      setError(humanizeError(cardsResult.error || eventsResult.error));
+    if (cardsResult.error || eventsResult.error || activitiesResult.error) {
+      setError(humanizeError(cardsResult.error || eventsResult.error || activitiesResult.error));
       return;
     }
     setCards(cardsResult.data || []);
@@ -488,6 +639,7 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
       const pending = current.filter((item) => item.pending && !(eventsResult.data || []).some((saved) => saved.id === item.id));
       return [...pending, ...(eventsResult.data || [])];
     });
+    setActivities(activitiesResult.data || []);
   }, [space.id]);
 
   const persistOutbox = useCallback((updater) => {
@@ -555,11 +707,18 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
         .channel(`couple-space-${space.id}`)
         .on("postgres_changes", { event: "*", schema: "public", table: "cards", filter: `space_id=eq.${space.id}` }, (payload) => {
           if (payload.eventType === "DELETE") setCards((current) => current.filter((item) => item.id !== payload.old.id));
-          else setCards((current) => upsertById(current, payload.new));
+          else if (payload.new.status !== "active") {
+            setCards((current) => current.filter((item) => item.id !== payload.new.id));
+            setSelectedCardId((current) => current === payload.new.id ? null : current);
+          } else setCards((current) => upsertById(current, payload.new));
         })
         .on("postgres_changes", { event: "*", schema: "public", table: "stamp_events", filter: `space_id=eq.${space.id}` }, (payload) => {
           if (payload.eventType === "DELETE") setEvents((current) => current.filter((item) => item.id !== payload.old.id));
           else setEvents((current) => upsertById(current, { ...payload.new, pending: false }));
+        })
+        .on("postgres_changes", { event: "*", schema: "public", table: "card_activity_events", filter: `space_id=eq.${space.id}` }, (payload) => {
+          if (payload.eventType === "DELETE") setActivities((current) => current.filter((item) => item.id !== payload.old.id));
+          else setActivities((current) => upsertById(current, payload.new));
         })
         .subscribe((status) => setRealtimeStatus(status));
     };
@@ -587,6 +746,7 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
     if (!selectedCard) return;
     const progress = cardProgress(selectedCard, events);
     if (progress.complete) return setError("這張卡已經集滿");
+    if (progress.mode === "personal" && selectedCard.participant_id !== user.id) return setError("這張個人卡由指定的伴侶累積，你可以關注進度。 ");
     const event = {
       id: crypto.randomUUID(),
       card_id: selectedCard.id,
@@ -620,6 +780,45 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
     setSelectedCardId(card.id);
   };
 
+  const handleCardUpdated = (card) => {
+    setCards((current) => upsertById(current, card));
+    setEditOpen(false);
+    setCardActionsOpen(false);
+  };
+
+  const requestReward = async () => {
+    if (!selectedCard) return;
+    const { data, error: rpcError } = await supabase.rpc("request_reward_redemption", { target_card_id: selectedCard.id });
+    if (rpcError) return setError(humanizeError(rpcError));
+    handleCardUpdated(Array.isArray(data) ? data[0] : data);
+  };
+
+  const confirmReward = async () => {
+    if (!selectedCard) return;
+    const { data, error: rpcError } = await supabase.rpc("confirm_reward_redemption", { target_card_id: selectedCard.id });
+    if (rpcError) return setError(humanizeError(rpcError));
+    handleCardUpdated(Array.isArray(data) ? data[0] : data);
+  };
+
+  const copySelectedCard = async () => {
+    if (!selectedCard) return;
+    const { data, error: rpcError } = await supabase.rpc("copy_card", { target_card_id: selectedCard.id });
+    if (rpcError) throw rpcError;
+    const copiedCard = Array.isArray(data) ? data[0] : data;
+    setCards((current) => upsertById(current, copiedCard));
+    setCardActionsOpen(false);
+    setSelectedCardId(copiedCard.id);
+  };
+
+  const archiveSelectedCard = async () => {
+    if (!selectedCard) return;
+    const { error: rpcError } = await supabase.rpc("archive_card", { target_card_id: selectedCard.id });
+    if (rpcError) throw rpcError;
+    setCards((current) => current.filter((card) => card.id !== selectedCard.id));
+    setCardActionsOpen(false);
+    setSelectedCardId(null);
+  };
+
   const endSpace = async () => {
     const { error: endError } = await supabase.rpc("end_couple_space");
     if (endError) throw endError;
@@ -630,6 +829,7 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
 
   const recentEvents = events.slice(0, 6);
   const selectedEvents = selectedCard ? events.filter((event) => event.card_id === selectedCard.id) : [];
+  const selectedActivities = selectedCard ? activities.filter((activity) => activity.card_id === selectedCard.id) : [];
   const selectedProgress = selectedCard ? cardProgress(selectedCard, events) : null;
 
   return (
@@ -648,27 +848,35 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
       {selectedCard ? (
         <section className="detail-view">
           <button className="back-button" onClick={() => setSelectedCardId(null)}><ArrowLeft size={17} /> 返回首頁</button>
-          <div className="detail-heading"><span className="mode-pill"><UsersRound size={13} /> 共同卡</span><h2>{selectedCard.title}</h2><p>{selectedCard.action_label}</p></div>
+          <div className="detail-heading"><span className="mode-pill"><ModeIcon mode={selectedProgress.mode} /> {CARD_MODE_LABELS[selectedProgress.mode]}</span><button className="detail-actions" onClick={() => setCardActionsOpen(true)} aria-label="管理卡片"><Settings size={17} /></button><h2>{selectedCard.title}</h2><p>{selectedCard.action_label}</p></div>
           <section className="stamp-card">
-            {selectedProgress.complete && <span className="complete-ribbon complete-ribbon--large">集滿了！</span>}
+            {selectedProgress.complete && <span className="complete-ribbon complete-ribbon--large">{selectedProgress.mode === "competition" ? "勝負已定！" : "集滿了！"}</span>}
             <div className="stamp-grid">
               {Array.from({ length: selectedCard.target_count }).map((_, index) => (
                 <span className="stamp-slot" key={index}>{index < selectedProgress.count && <StampMark index={index} />}</span>
               ))}
             </div>
-            <div className="detail-progress"><strong>{selectedProgress.count}</strong> / {selectedProgress.target} 次</div>
+            <div className="detail-progress"><strong>{selectedProgress.count}</strong> / {selectedProgress.target} {selectedProgress.mode === "competition" ? "領先次數" : "次"}</div>
             <div className="progress-track progress-track--large"><span style={{ width: `${Math.min(100, (selectedProgress.count / selectedProgress.target) * 100)}%` }} /></div>
             <div className="member-contribution-grid">
               {members.map((member) => <div key={member.user_id}><InitialAvatar name={member.profile?.display_name} /><span>{member.profile?.display_name}</span><strong>{selectedProgress.contributions[member.user_id] || 0} 次</strong></div>)}
             </div>
+            {selectedProgress.mode === "personal" && <p className="mode-explainer">由 {memberNames[selectedCard.participant_id] || "指定伴侶"} 累積這張個人卡。</p>}
+            {selectedProgress.mode === "competition" && selectedCard.winner_id && <p className="mode-explainer mode-explainer--winner"><Medal size={16} /> {memberNames[selectedCard.winner_id] || "伴侶"} 率先達成目標。</p>}
             <div className="reward-box"><Gift /><span><small>完成獎勵</small><strong>{selectedCard.reward}</strong></span></div>
-            <button className={selectedProgress.complete ? "primary-button primary-button--complete" : "primary-button"} disabled={selectedProgress.complete} onClick={() => setStampOpen(true)}>
-              {selectedProgress.complete ? <><Check size={18} /> 已完成共同目標</> : <><Ticket size={18} /> 蓋一個章</>}
-            </button>
+            {selectedCard.reward_state === "ready" && <button className="primary-button primary-button--complete" onClick={requestReward}><Gift size={18} /> 申請兌換獎勵</button>}
+            {selectedCard.reward_state === "requested" && selectedCard.reward_requested_by !== user.id && <button className="primary-button primary-button--complete" onClick={confirmReward}><Check size={18} /> 確認已兌換獎勵</button>}
+            {selectedCard.reward_state === "requested" && selectedCard.reward_requested_by === user.id && <div className="reward-waiting"><Clock3 size={17} /> 已申請，等待 {partner?.profile?.display_name || "伴侶"} 確認</div>}
+            {selectedCard.reward_state === "redeemed" && <div className="reward-waiting"><Check size={17} /> 獎勵已由 {memberNames[selectedCard.reward_redeemed_by] || "伴侶"} 確認兌換</div>}
+            {!selectedProgress.complete && <button className="primary-button" disabled={selectedProgress.mode === "personal" && selectedCard.participant_id !== user.id} onClick={() => setStampOpen(true)}><Ticket size={18} /> {selectedProgress.mode === "personal" && selectedCard.participant_id !== user.id ? "由指定伴侶蓋章" : "蓋一個章"}</button>}
           </section>
           <section className="section-block">
             <div className="section-title"><div><span className="eyebrow">TRACEABLE MOMENTS</span><h3>最近蓋章紀錄</h3></div><Clock3 size={20} /></div>
             {selectedEvents.length ? selectedEvents.map((event) => <EventItem key={event.id} event={event} memberNames={memberNames} currentUserId={user.id} onUndo={undoStamp} />) : <div className="empty-inline">還沒有紀錄，蓋下第一個章吧。</div>}
+          </section>
+          <section className="section-block">
+            <div className="section-title"><div><span className="eyebrow">CARD LIFECYCLE</span><h3>規則與獎勵紀錄</h3></div><Clock3 size={20} /></div>
+            {selectedActivities.length ? selectedActivities.map((activity) => <CardActivityItem key={activity.id} activity={activity} memberNames={memberNames} />) : <div className="empty-inline">這張卡的變更會保留在這裡。</div>}
           </section>
         </section>
       ) : (
@@ -679,7 +887,7 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
           </section>
           <section className="section-block cards-section">
             <div className="section-title"><div><span className="eyebrow">IN PROGRESS</span><h3>進行中的卡片</h3></div><button className="round-add" onClick={() => online ? setCreateOpen(true) : setError("離線時暫時無法建立新卡片")}><Plus /></button></div>
-            {cards.length ? <div className="card-grid">{cards.map((card) => <CardTile key={card.id} card={card} events={events} memberNames={memberNames} onOpen={() => setSelectedCardId(card.id)} />)}</div> : (
+            {cards.length ? <div className="card-grid">{cards.map((card) => <CardTile key={card.id} card={card} events={events} memberNames={memberNames} currentUserId={user.id} onOpen={() => setSelectedCardId(card.id)} />)}</div> : (
               <button className="empty-card" onClick={() => setCreateOpen(true)}><span className="empty-card__icon"><Plus /></span><strong>建立你們的第一張共同卡</strong><span>選一件想一起完成的小事</span></button>
             )}
           </section>
@@ -690,8 +898,10 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
         </>
       )}
 
-      {createOpen && <CreateCardModal spaceId={space.id} userId={user.id} onClose={() => setCreateOpen(false)} onCreated={handleCreated} />}
+      {createOpen && <CreateCardModal spaceId={space.id} userId={user.id} members={members} onClose={() => setCreateOpen(false)} onCreated={handleCreated} />}
       {stampOpen && selectedCard && <StampModal card={selectedCard} onClose={() => setStampOpen(false)} onStamp={addStamp} />}
+      {editOpen && selectedCard && <EditCardModal card={selectedCard} members={members} events={events} onClose={() => setEditOpen(false)} onSaved={handleCardUpdated} />}
+      {cardActionsOpen && selectedCard && <CardActionsModal card={selectedCard} onClose={() => setCardActionsOpen(false)} onEdit={() => { setCardActionsOpen(false); setEditOpen(true); }} onCopy={copySelectedCard} onArchive={archiveSelectedCard} />}
       {settingsOpen && <SettingsModal profile={profile} space={space} onClose={() => setSettingsOpen(false)} onOpenArchive={onOpenArchive} onEndSpace={() => { setSettingsOpen(false); setEndSpaceOpen(true); }} />}
       {endSpaceOpen && <EndSpaceModal onClose={() => setEndSpaceOpen(false)} onEnded={endSpace} />}
     </main>
@@ -775,6 +985,7 @@ function ArchiveScreen({ profile, archive, onBack, onRefresh }) {
   const [error, setError] = useState("");
   const [recoveryInvite, setRecoveryInvite] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [copyingCardId, setCopyingCardId] = useState(null);
 
   const loadArchive = useCallback(async () => {
     setLoading(true);
@@ -813,6 +1024,15 @@ function ArchiveScreen({ profile, archive, onBack, onRefresh }) {
     window.setTimeout(() => setCopied(false), 1800);
   };
 
+  const copyCard = async (cardId) => {
+    setCopyingCardId(cardId);
+    setError("");
+    const { error: rpcError } = await supabase.rpc("copy_card", { target_card_id: cardId });
+    setCopyingCardId(null);
+    if (rpcError) return setError(humanizeError(rpcError));
+    onBack();
+  };
+
   if (loading) return <LoadingScreen />;
 
   const memberNames = Object.fromEntries(members.map((member) => [member.user_id, member.profile?.display_name || "伴侶"]));
@@ -848,7 +1068,7 @@ function ArchiveScreen({ profile, archive, onBack, onRefresh }) {
         <div className="section-title"><div><span className="eyebrow">ARCHIVED CARDS</span><h3>已封存的卡片</h3></div><Gift size={20} /></div>
         {cards.length ? <div className="memory-grid">{cards.map((card) => {
           const progress = cardProgress(card, events);
-          return <article className="memory-card" key={card.id}><span>{progress.count}/{progress.target} 次</span><h3>{card.title}</h3><p>{card.action_label}</p><div className="progress-track"><span style={{ width: `${Math.min(100, (progress.count / progress.target) * 100)}%` }} /></div><div className="reward-line"><Gift size={14} /> {card.reward}</div></article>;
+          return <article className="memory-card" key={card.id}><span>{CARD_MODE_LABELS[card.mode] || "共同累積"} · {progress.count}/{progress.target} 次</span><h3>{card.title}</h3><p>{card.action_label}</p><div className="progress-track"><span style={{ width: `${Math.min(100, (progress.count / progress.target) * 100)}%` }} /></div><div className="reward-line"><Gift size={14} /> {card.reward}</div>{archive.status === "active" && <button className="secondary-button compact-button" disabled={copyingCardId === card.id} onClick={() => copyCard(card.id)}><CopyPlus size={16} /> {copyingCardId === card.id ? "複製中…" : "複製成新一輪"}</button>}</article>;
         })}</div> : <div className="empty-inline">目前沒有封存卡片。</div>}
       </section>
       <section className="section-block">
@@ -961,6 +1181,14 @@ function AuthenticatedApp({ session }) {
       if (channel) supabase.removeChannel(channel);
     };
   }, [membership?.space_id, refreshIdentity, session.access_token]);
+
+  // Realtime is the fast path. This fallback protects pairing and archive
+  // transitions if a foregrounded mobile PWA briefly loses its websocket.
+  useEffect(() => {
+    if (!membership?.space_id) return undefined;
+    const interval = window.setInterval(() => { refreshIdentity(); }, 4000);
+    return () => window.clearInterval(interval);
+  }, [membership?.space_id, refreshIdentity]);
 
   if (loading) return <LoadingScreen />;
   if (error && !profile) return <main className="app-shell app-shell--centered"><Brand /><ErrorNotice onRetry={refreshIdentity}>{error}</ErrorNotice></main>;

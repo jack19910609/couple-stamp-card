@@ -14,6 +14,26 @@ describe("cardProgress", () => {
     expect(result.complete).toBe(true);
     expect(result.contributions).toEqual({ u1: 1, u2: 1 });
   });
+
+  it("counts only the assigned person on a personal card", () => {
+    const result = cardProgress({ ...card, mode: "personal", participant_id: "u1" }, [
+      { id: "a", card_id: "card-1", actor_id: "u1", undone_at: null },
+      { id: "b", card_id: "card-1", actor_id: "u2", undone_at: null },
+    ]);
+    expect(result.count).toBe(1);
+    expect(result.complete).toBe(false);
+  });
+
+  it("keeps competition progress separate and finds the leader", () => {
+    const result = cardProgress({ ...card, mode: "competition" }, [
+      { id: "a", card_id: "card-1", actor_id: "u1", undone_at: null },
+      { id: "b", card_id: "card-1", actor_id: "u2", undone_at: null },
+      { id: "c", card_id: "card-1", actor_id: "u1", undone_at: null },
+    ]);
+    expect(result.count).toBe(2);
+    expect(result.complete).toBe(true);
+    expect(result.contributions).toEqual({ u1: 2, u2: 1 });
+  });
 });
 
 describe("event helpers", () => {
