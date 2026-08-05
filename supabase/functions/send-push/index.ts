@@ -76,6 +76,13 @@ function responseStatus(error: unknown) {
 }
 
 function compactError(error: unknown) {
+  if (error && typeof error === "object" && !(error instanceof Error)) {
+    const record = error as Record<string, unknown>;
+    const message = [record.code, record.message, record.details, record.hint]
+      .filter((value) => typeof value === "string" && value)
+      .join(" · ");
+    if (message) return message.slice(0, 240);
+  }
   const message = error instanceof Error ? error.message : String(error);
   return message.slice(0, 240);
 }
@@ -167,11 +174,6 @@ export default {
     if (subscriptionsError) throw subscriptionsError;
     if (!subscriptions?.length) return Response.json({ skipped: "no_subscriptions" });
 
-    webpush.setVapidDetails(
-      requiredSecret("VAPID_SUBJECT"),
-      requiredSecret("VAPID_PUBLIC_KEY"),
-      requiredSecret("VAPID_PRIVATE_KEY"),
-    );
     const title = typeof notification.data?.title === "string" ? notification.data.title : null;
     const payload = JSON.stringify({
       title: "愛的集點卡",
@@ -187,9 +189,16 @@ export default {
         target_notification_id: notification.id,
         target_subscription_id: subscription.id,
       }).single<{ delivery_id: string; claimed: boolean }>();
-      if (claimError) throw claimError;
+      if (claimError) {
+        return { subscriptionId: subscription.id, status: "claim_failed", error: compactError(claimError) };
+      }
       if (!claim?.claimed) return { subscriptionId: subscription.id, status: "duplicate" };
       try {
+        webpush.setVapidDetails(
+          requiredSecret("VAPID_SUBJECT"),
+          requiredSecret("VAPID_PUBLIC_KEY"),
+          requiredSecret("VAPID_PRIVATE_KEY"),
+        );
         const delivery = await sendWithRetries(subscription, payload);
         await admin.from("push_delivery_log").update({
           status: "sent", attempts: delivery.attempts, response_status: delivery.response.statusCode || 201, sent_at: new Date().toISOString(), error_code: null,

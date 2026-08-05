@@ -1,6 +1,5 @@
--- Edge Functions call PostgreSQL RPCs through PostgREST, which exposes the
--- public schema. Keep the delivery claim callable only by service_role while
--- retaining the unique constraint as the final idempotency boundary.
+-- `return query` appends rows but does not exit a PL/pgSQL function. Exit the
+-- successful insert path so PostgREST receives exactly one claim result.
 
 create or replace function public.claim_push_delivery(
   target_notification_id uuid,
