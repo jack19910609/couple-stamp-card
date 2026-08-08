@@ -185,6 +185,38 @@ button.sync-badge { cursor: pointer; }
 .sync-badge--ok { color: #476a48; background: rgba(63,116,67,.1); }
 .sync-badge--offline, .sync-badge--error { color: #8a4e24; background: rgba(173,97,46,.11); }
 
+.pwa-update-notice {
+  position: fixed;
+  z-index: 30;
+  right: max(14px, calc(14px + var(--safe-right)));
+  bottom: max(14px, calc(14px + var(--safe-bottom)));
+  left: max(14px, calc(14px + var(--safe-left)));
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 15px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border: 1.5px solid rgba(173,57,46,.35);
+  border-radius: 18px;
+  color: var(--ink);
+  background: rgba(255,249,236,.97);
+  box-shadow: 0 16px 38px rgba(74,51,35,.24);
+  backdrop-filter: blur(12px);
+}
+.pwa-update-notice > div:first-child { min-width: 0; flex: 1; }
+.pwa-update-notice .eyebrow { display: block; margin-bottom: 3px; font-size: 9px; }
+.pwa-update-notice strong { display: block; font-family: "Noto Serif TC", serif; font-size: 17px; }
+.pwa-update-notice p, .pwa-update-notice small { display: block; margin: 3px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.pwa-update-notice small { color: var(--red-dark); }
+.pwa-update-notice__actions { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; }
+.pwa-update-notice__actions .primary-button, .pwa-update-notice__actions .secondary-button { width: auto; min-height: 38px; padding: 9px 11px; font-size: 12px; white-space: nowrap; }
+
+@media (max-width: 470px) {
+  .pwa-update-notice { flex-direction: column; align-items: stretch; gap: 10px; }
+  .pwa-update-notice__actions { justify-content: flex-end; }
+}
+
 .welcome-panel { min-height: 154px; border-radius: 22px; padding: 27px; display: flex; justify-content: space-between; overflow: hidden; position: relative; color: #fff7e8; background: linear-gradient(135deg, #573824, #8b352b); box-shadow: 0 14px 30px rgba(74,51,35,.2); }
 .welcome-panel .eyebrow { color: #eac986; }
 .welcome-panel h2 { margin: 7px 0 0; font-size: clamp(21px, 5vw, 28px); line-height: 1.45; }

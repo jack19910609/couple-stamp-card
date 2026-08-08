@@ -113,3 +113,9 @@ RLS 的授權來源是 `couple_members`，使用者只可讀取自己所在 Coup
 推送至 `master` 會觸發 GitHub Actions，將 production build 發布到 GitHub Pages。Vite 在 GitHub Actions 中使用 `/couple-stamp-card/` base path；正式網站是 `https://jack19910609.github.io/couple-stamp-card/`。
 
 `VITE_SUPABASE_URL` 與 Publishable Key 放在 `.env.production`，因為它們本來就必須存在於瀏覽器 bundle。`SUPABASE_SECRET_KEY` 只留在本機 `.env.local`，絕不可提交或加入 GitHub Actions。
+
+### PWA 版本更新
+
+已加到桌面的 App 會在啟動、回到前景與每小時檢查新版。新版下載完成後會顯示「新版已下載」提示；使用者選擇「立即更新」才會重新載入，因此不需要重新加到桌面。
+
+若裝置離線或仍有蓋章、復原、留言、表情等待同步，更新按鈕會暫時停用，待資料安全送出後才可套用。Service Worker 只預快取本站的版本化 App Shell 與安裝資源；Supabase Auth、API、Realtime 與 Push 服務一律維持網路請求。

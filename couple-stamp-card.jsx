@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRegisterSW } from "virtual:pwa-register/react";
 import {
   Archive,
   ArrowLeft,
@@ -28,6 +29,7 @@ import {
 import { supabase, isSupabaseConfigured } from "./src/lib/supabase.js";
 import { CARD_MODE_LABELS, cardProgress, formatRelativeTime, isTerminalOutboxError, isUndoable, upsertById } from "./src/lib/domain.js";
 import { appendToQueue, readQueue, removeQueuedAction, replaceQueuedReaction, writeQueue } from "./src/lib/offlineQueue.js";
+import { canApplyPwaUpdate, updateBlockReason } from "./src/lib/pwaUpdate.js";
 import { currentPushSubscription, pushPermission, pushSupport, subscribeToPush, unsubscribeFromPush } from "./src/lib/push.js";
 
 function humanizeError(error) {
@@ -427,6 +429,60 @@ function SyncBadge({ online, realtimeStatus, queueLength, syncing, error, onRetr
   return <span className="sync-badge"><RefreshCw className="spin" size={14} /> 正在連線</span>;
 }
 
+function PwaUpdateNotice({ syncState }) {
+  const [dismissed, setDismissed] = useState(false);
+  const [updateError, setUpdateError] = useState("");
+  const registrationRef = useRef(null);
+  const { needRefresh: [needRefresh], updateServiceWorker } = useRegisterSW({
+    immediate: true,
+    onNeedRefresh: () => setDismissed(false),
+    onRegisteredSW: async (scriptUrl, registration) => {
+      try {
+        // Do not let a stale HTTP cache postpone the PWA's update check. This
+        // also takes over installations that previously used push-sw.js.
+        const base = import.meta.env.BASE_URL || "/";
+        registrationRef.current = await navigator.serviceWorker.register(scriptUrl, { scope: base, updateViaCache: "none" });
+        await registrationRef.current.update();
+      } catch {
+        // A temporary registration failure must never prevent using the app.
+      }
+    },
+  });
+
+  useEffect(() => {
+    const checkForUpdate = () => {
+      if (document.visibilityState === "visible") registrationRef.current?.update().catch(() => {});
+    };
+    window.addEventListener("focus", checkForUpdate);
+    document.addEventListener("visibilitychange", checkForUpdate);
+    const timer = window.setInterval(checkForUpdate, 60 * 60 * 1000);
+    return () => {
+      window.removeEventListener("focus", checkForUpdate);
+      document.removeEventListener("visibilitychange", checkForUpdate);
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  if (!needRefresh || dismissed) return null;
+  const blockReason = updateBlockReason(syncState);
+  const applyUpdate = async () => {
+    if (!canApplyPwaUpdate(syncState)) return;
+    setUpdateError("");
+    try {
+      await updateServiceWorker();
+    } catch {
+      setUpdateError("新版暫時無法套用，請稍後再試。");
+    }
+  };
+
+  return (
+    <aside className="pwa-update-notice" role="status" aria-live="polite">
+      <div><span className="eyebrow">NEW VERSION READY</span><strong>新版已下載</strong><p>{blockReason || "按下更新後會重新載入，不需要重新加到桌面。"}</p>{updateError && <small>{updateError}</small>}</div>
+      <div className="pwa-update-notice__actions"><button className="secondary-button" onClick={() => setDismissed(true)}>稍後</button><button className="primary-button" disabled={Boolean(blockReason)} onClick={applyUpdate}>立即更新</button></div>
+    </aside>
+  );
+}
+
 function useModalScrollLock() {
   useEffect(() => {
     document.body.classList.add("has-modal");
@@ -772,7 +828,7 @@ function EventItem({ event, memberNames, currentUserId, onUndo, showCard, cardTi
   );
 }
 
-function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, onRelationshipChanged, pushTarget, onPushTargetHandled }) {
+function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, onRelationshipChanged, pushTarget, onPushTargetHandled, onSyncStateChange }) {
   const [cards, setCards] = useState([]);
   const [events, setEvents] = useState([]);
   const [activities, setActivities] = useState([]);
@@ -801,6 +857,10 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
   const partner = members.find((member) => member.user_id !== user.id);
   const selectedCard = cards.find((card) => card.id === selectedCardId) || null;
   const unreadNotificationCount = notifications.filter((notification) => !notification.read_at).length;
+
+  useEffect(() => {
+    onSyncStateChange?.({ online, queueLength: outbox.length, syncing });
+  }, [onSyncStateChange, online, outbox.length, syncing]);
 
   // A queued reaction represents the user's newest desired state. Keep that
   // local state visible when a background fetch or an earlier Realtime event
@@ -1554,7 +1614,7 @@ function ArchiveScreen({ profile, archive, onBack, onRefresh }) {
   );
 }
 
-function AuthenticatedApp({ session }) {
+function AuthenticatedApp({ session, onSyncStateChange }) {
   const [profile, setProfile] = useState(null);
   const [membership, setMembership] = useState(null);
   const [members, setMembers] = useState([]);
@@ -1592,6 +1652,7 @@ function AuthenticatedApp({ session }) {
       // An explicit end makes any local stamp waiting for the former space
       // inapplicable. Do not carry it into a later Couple Space.
       writeQueue(userId, []);
+      onSyncStateChange({ online: navigator.onLine, queueLength: 0, syncing: false });
       setMembers([]);
       setInvite(null);
       setLoading(false);
@@ -1607,7 +1668,7 @@ function AuthenticatedApp({ session }) {
     setMembers(membersResult.data || []);
     setInvite(inviteResult.data);
     setLoading(false);
-  }, [session.user.id, session.user.user_metadata]);
+  }, [onSyncStateChange, session.user.id, session.user.user_metadata]);
 
   const consumePushTarget = useCallback(() => {
     clearPushTargetFromUrl();
@@ -1690,7 +1751,7 @@ function AuthenticatedApp({ session }) {
   if (!profile?.display_name) return <ProfileGate profile={profile} onSaved={(saved) => { setProfile(saved); refreshIdentity(); }} />;
   if (archiveView) return <ArchiveScreen profile={profile} archive={archiveView} onBack={() => setArchiveView(null)} onRefresh={refreshIdentity} />;
   if (!membership || members.length < 2) return <PairingScreen profile={profile} membership={membership} invite={invite} archives={archives} onOpenArchive={setArchiveView} onRefresh={refreshIdentity} />;
-  return <Dashboard user={session.user} accessToken={session.access_token} profile={profile} space={{ id: membership.space_id, status: "active" }} members={members} onOpenArchive={setArchiveView} onRelationshipChanged={refreshIdentity} pushTarget={pushTarget?.spaceId === membership.space_id ? pushTarget : null} onPushTargetHandled={consumePushTarget} />;
+  return <Dashboard user={session.user} accessToken={session.access_token} profile={profile} space={{ id: membership.space_id, status: "active" }} members={members} onOpenArchive={setArchiveView} onRelationshipChanged={refreshIdentity} pushTarget={pushTarget?.spaceId === membership.space_id ? pushTarget : null} onPushTargetHandled={consumePushTarget} onSyncStateChange={onSyncStateChange} />;
 }
 
 export default function CoupleStampCard() {
@@ -1700,6 +1761,16 @@ export default function CoupleStampCard() {
 
 function SessionRouter() {
   const { session, loading } = useSession();
-  if (loading) return <LoadingScreen />;
-  return session ? <AuthenticatedApp session={session} /> : <AuthScreen />;
+  const [syncState, setSyncState] = useState(() => ({ online: navigator.onLine, queueLength: 0, syncing: false }));
+
+  useEffect(() => {
+    setSyncState({
+      online: navigator.onLine,
+      queueLength: session ? readQueue(session.user.id).length : 0,
+      syncing: false,
+    });
+  }, [session?.user.id]);
+
+  const content = loading ? <LoadingScreen /> : (session ? <AuthenticatedApp session={session} onSyncStateChange={setSyncState} /> : <AuthScreen />);
+  return <>{content}<PwaUpdateNotice syncState={syncState} /></>;
 }

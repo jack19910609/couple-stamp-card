@@ -25,7 +25,10 @@ async function pushRegistration() {
   const support = pushSupport();
   if (!support.supported) throw new Error(`Push is ${support.reason}`);
   const base = import.meta.env.BASE_URL || "/";
-  return navigator.serviceWorker.register(`${base}push-sw.js`, { scope: base });
+  // This is the same worker that precaches the App Shell and manages updates.
+  // Re-registering its stable URL also upgrades existing Push-only installs
+  // that were previously controlled by public/push-sw.js.
+  return navigator.serviceWorker.register(`${base}sw.js`, { scope: base, updateViaCache: "none" });
 }
 
 export async function subscribeToPush() {
