@@ -144,6 +144,7 @@ select { appearance: auto; }
   cursor: pointer;
 }
 .centered { margin: 10px auto 0; }
+.pairing-cancel-button { color: var(--red-dark); }
 .icon-button { width: 38px; height: 38px; border: 0; border-radius: 50%; display: grid; place-items: center; background: rgba(74,51,35,.07); cursor: pointer; }
 
 .notice { border-radius: 11px; padding: 10px 12px; display: flex; justify-content: space-between; gap: 10px; font-size: 12px; line-height: 1.5; }

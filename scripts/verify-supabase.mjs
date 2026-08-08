@@ -92,15 +92,59 @@ async function waitForCondition(read, description, timeoutMs = 30_000) {
 }
 
 async function main() {
-  console.log("1/15 Creating isolated users…");
-  const [a, b, outsider, expiryOwner] = await Promise.all([
+  console.log("1/16 Creating isolated users…");
+  const [a, b, outsider, expiryOwner, pendingOwner, pendingPartner, recordOwner] = await Promise.all([
     createTestUser("a"),
     createTestUser("b"),
     createTestUser("outsider"),
     createTestUser("expiry"),
+    createTestUser("pending-owner"),
+    createTestUser("pending-partner"),
+    createTestUser("record-owner"),
   ]);
 
-  console.log("2/15 Verifying pairing completion and one-time six-digit codes…");
+  console.log("2/16 Verifying safe cancellation of one-person pairing drafts…");
+  const cancellableRows = resultData(await pendingOwner.client.rpc("create_pairing_invite"), "create cancellable pairing invite");
+  const cancellableInvite = cancellableRows?.[0];
+  createdSpaces.add(cancellableInvite.invite_space_id);
+  const cancelledSpaceId = resultData(await pendingOwner.client.rpc("cancel_pending_pairing"), "cancel pending pairing invite");
+  assert(cancelledSpaceId === cancellableInvite.invite_space_id, "Cancelled an unexpected pending Couple Space");
+  const noActiveDraft = resultData(await pendingOwner.client.from("couple_members").select("space_id").is("departed_at", null), "read membership after cancellation");
+  assert(noActiveDraft.length === 0, "Cancelling a draft left an active membership behind");
+  const deletedDraft = resultData(await admin.from("couple_spaces").select("id").eq("id", cancellableInvite.invite_space_id), "verify pending draft deletion");
+  assert(deletedDraft.length === 0, "Cancelling a draft created an archive instead of deleting it");
+  const staleCancelledCode = await outsider.client.rpc("accept_pairing_invite", { submitted_code: cancellableInvite.invite_code });
+  assert(staleCancelledCode.error, "A cancelled pairing code was still accepted");
+  const outsiderCancel = await outsider.client.rpc("cancel_pending_pairing");
+  assert(outsiderCancel.error, "An account without a pending invitation could cancel a space");
+
+  const ownerDraftRows = resultData(await pendingOwner.client.rpc("create_pairing_invite"), "create first accidental pairing invite");
+  const partnerDraftRows = resultData(await pendingPartner.client.rpc("create_pairing_invite"), "create second accidental pairing invite");
+  const ownerDraft = ownerDraftRows?.[0];
+  const partnerDraft = partnerDraftRows?.[0];
+  createdSpaces.add(ownerDraft.invite_space_id);
+  createdSpaces.add(partnerDraft.invite_space_id);
+  resultData(await pendingOwner.client.rpc("cancel_pending_pairing"), "cancel first accidental pairing invite");
+  const resolvedDeadlockSpaceId = resultData(await pendingOwner.client.rpc("accept_pairing_invite", { submitted_code: partnerDraft.invite_code }), "join the other pending invitation after cancellation");
+  assert(resolvedDeadlockSpaceId === partnerDraft.invite_space_id, "Cancelling a draft did not allow joining the partner invitation");
+  const resolvedMembers = resultData(await pendingPartner.client.from("couple_members").select("user_id").eq("space_id", resolvedDeadlockSpaceId).is("departed_at", null), "read members after resolving accidental invites");
+  assert(resolvedMembers.length === 2, "The accidental-invite recovery did not pair both users");
+  const pairedDraftCancel = await pendingOwner.client.rpc("cancel_pending_pairing");
+  assert(pairedDraftCancel.error, "A paired Couple Space could be cancelled as a pending draft");
+
+  const recordDraftRows = resultData(await recordOwner.client.rpc("create_pairing_invite"), "create record-bearing draft");
+  const recordDraft = recordDraftRows?.[0];
+  createdSpaces.add(recordDraft.invite_space_id);
+  const recordCard = singleData(await recordOwner.client.rpc("create_card", {
+    target_space_id: recordDraft.invite_space_id, card_mode: "shared", card_participant_id: null,
+    card_title: "不可刪除的草稿紀錄", card_action_label: "留下卡片", card_target_count: 2, card_reward: "保留資料",
+  }), "create a record in draft space");
+  const recordDraftCancel = await recordOwner.client.rpc("cancel_pending_pairing");
+  assert(recordDraftCancel.error, "A pending space with a card record could be deleted");
+  const retainedRecordCard = singleData(await admin.from("cards").select("id").eq("id", recordCard.id).single(), "verify draft record remains");
+  assert(retainedRecordCard.id === recordCard.id, "Cancelling a record-bearing draft removed its card");
+
+  console.log("3/16 Verifying pairing completion and one-time six-digit codes…");
   const inviteRows = resultData(await a.client.rpc("create_pairing_invite"), "create pairing invite");
   const invite = inviteRows?.[0];
   assert(invite && /^\d{6}$/.test(invite.invite_code), "RPC did not return a six-digit pairing code");
@@ -114,7 +158,7 @@ async function main() {
   const reused = await outsider.client.rpc("accept_pairing_invite", { submitted_code: invite.invite_code });
   assert(reused.error, "A used pairing code was accepted twice");
 
-  console.log("3/15 Verifying expired pairing rejection…");
+  console.log("4/16 Verifying expired pairing rejection…");
   const expiryRows = resultData(await expiryOwner.client.rpc("create_pairing_invite"), "create expiry invite");
   const expiryInvite = expiryRows[0];
   createdSpaces.add(expiryInvite.invite_space_id);
@@ -132,7 +176,7 @@ async function main() {
     card_reward: values.reward,
   }), label);
 
-  console.log("4/15 Creating a shared card and reading lifecycle audit…");
+  console.log("5/16 Creating a shared card and reading lifecycle audit…");
   const sharedCard = await createCard(a.client, {
     mode: "shared", title: "整合測試共同卡", action: "完成一次共同測試", target: 2, reward: "共享獎勵",
   }, "create shared card");
@@ -146,7 +190,7 @@ async function main() {
   const ownCreationNotifications = resultData(await a.client.from("user_notifications").select("id").eq("card_id", sharedCard.id), "creator notification query");
   assert(ownCreationNotifications.length === 0, "A creator received their own card notification");
 
-  console.log("5/15 Verifying shared completion, Realtime, and idempotent stamps…");
+  console.log("6/16 Verifying shared completion, Realtime, and idempotent stamps…");
   const firstSharedEventId = randomUUID();
   const finalSharedEventId = randomUUID();
   let cardReceiver;
@@ -186,7 +230,7 @@ async function main() {
   const duplicateCheck = resultData(await b.client.from("stamp_events").select("id", { count: "exact" }).eq("id", firstSharedEventId), "count replayed event");
   assert(duplicateCheck.length === 1, "Replaying an event created a duplicate stamp");
 
-  console.log("5b/15 Verifying comments, reactions, private notifications, and Realtime…");
+  console.log("6b/16 Verifying comments, reactions, private notifications, and Realtime…");
   const commentId = randomUUID();
   let commentReceiver;
   const commentPromise = waitForEvent((resolve) => { commentReceiver = resolve; }, "comment INSERT");
@@ -260,7 +304,7 @@ async function main() {
   assert(completionNotifications.some((item) => item.kind === "stamp_created" && item.stamp_event_id === finalSharedEventId), "Partner did not receive the final stamp notification");
   assert(completionNotifications.filter((item) => item.kind === "card_completed").length === 1, "Card completion notification was missing or duplicated");
 
-  console.log("6/15 Verifying two-person reward request and confirmation…");
+  console.log("7/16 Verifying two-person reward request and confirmation…");
   let rewardActivityReceiver;
   const rewardActivityPromise = waitForEvent((resolve) => { rewardActivityReceiver = resolve; }, "reward request activity INSERT");
   const rewardChannel = b.client.channel(`verify-reward-${randomUUID()}`).on(
@@ -282,7 +326,7 @@ async function main() {
   const rewardRedemptionNotifications = resultData(await a.client.from("user_notifications").select("kind").eq("card_id", sharedCard.id), "read reward confirmation notification");
   assert(rewardRedemptionNotifications.some((item) => item.kind === "reward_redeemed"), "Requester did not receive reward confirmation notification");
 
-  console.log("7/15 Verifying personal card participant restrictions…");
+  console.log("8/16 Verifying personal card participant restrictions…");
   const personalCard = await createCard(a.client, {
     mode: "personal", participantId: a.user.id, title: "A 的個人卡", action: "完成一次個人練習", target: 2, reward: "個人卡獎勵",
   }, "create personal card");
@@ -298,7 +342,7 @@ async function main() {
   const completedPersonal = singleData(await a.client.from("cards").select("completed_at, reward_state").eq("id", personalCard.id).single(), "read completed personal card");
   assert(completedPersonal.completed_at && completedPersonal.reward_state === "ready", "Personal card did not complete");
 
-  console.log("8/15 Verifying atomic competition winner and undo reopening…");
+  console.log("9/16 Verifying atomic competition winner and undo reopening…");
   const competitionCard = await createCard(a.client, {
     mode: "competition", title: "同步競賽卡", action: "完成一次競賽測試", target: 2, reward: "競賽獎勵",
   }, "create competition card");
@@ -324,7 +368,7 @@ async function main() {
   const reopenedCompetition = singleData(await a.client.from("cards").select("winner_id, completed_at, reward_state").eq("id", competitionCard.id).single(), "read reopened competition");
   assert(!reopenedCompetition.winner_id && !reopenedCompetition.completed_at && reopenedCompetition.reward_state === "locked", "Undo did not reopen the competition card");
 
-  console.log("9/15 Verifying explicit rule-change confirmation and lifecycle audit…");
+  console.log("10/16 Verifying explicit rule-change confirmation and lifecycle audit…");
   const unconfirmedEdit = await a.client.rpc("update_card_rules", {
     target_card_id: personalCard.id, next_mode: "personal", next_participant_id: a.user.id,
     next_title: "更新後的個人卡", next_action_label: "更新後的條件", next_target_count: 3,
@@ -349,13 +393,13 @@ async function main() {
   const ruleCompletionNotificationsAfter = resultData(await b.client.from("user_notifications").select("id").eq("card_id", personalCard.id).eq("kind", "card_completed"), "count rule completion notifications after re-completing");
   assert(ruleCompletionNotificationsAfter.length === ruleCompletionNotificationsBefore.length + 1, "Partner did not receive completion notification after a rule change");
 
-  console.log("10/15 Verifying individual archive and copy into a new round…");
+  console.log("11/16 Verifying individual archive and copy into a new round…");
   const archivedPersonal = singleData(await a.client.rpc("archive_card", { target_card_id: personalCard.id }), "archive personal card");
   assert(archivedPersonal.status === "archived" && archivedPersonal.archived_at, "Individual card archive failed");
   const copiedPersonal = singleData(await b.client.rpc("copy_card", { target_card_id: personalCard.id }), "copy archived card");
   assert(copiedPersonal.status === "active" && copiedPersonal.id !== personalCard.id && copiedPersonal.mode === "personal", "Copy did not create a fresh active round");
 
-  console.log("11/15 Verifying Push subscription ownership, preferences, and RLS…");
+  console.log("12/16 Verifying Push subscription ownership, preferences, and RLS…");
   const verificationPushKey = createECDH("prime256v1");
   verificationPushKey.generateKeys();
   const pushEndpoint = `https://ruqghhdoatziepvbifnb.supabase.co/functions/v1/nonexistent-push-test-${randomUUID()}`;
@@ -425,7 +469,7 @@ async function main() {
   const disabledPushRows = resultData(await b.client.from("push_subscriptions").select("enabled").eq("endpoint", pushEndpoint), "read disabled Push subscription");
   assert(!disabledPushPreferences.push_enabled && disabledPushRows.length === 1 && !disabledPushRows[0].enabled, "Disabling Push did not deactivate the subscription");
 
-  console.log("12/15 Verifying outsider RLS isolation and RPC-only mutations…");
+  console.log("13/16 Verifying outsider RLS isolation and RPC-only mutations…");
   const outsiderRead = resultData(await outsider.client.from("cards").select("id").eq("id", sharedCard.id), "outsider card query");
   assert(outsiderRead.length === 0, "Outsider could read a Couple Space card");
   const outsiderWrite = await outsider.client.from("cards").insert({
@@ -441,7 +485,7 @@ async function main() {
   const directNotificationWrite = await b.client.from("user_notifications").insert({ recipient_id: a.user.id, actor_id: b.user.id, space_id: invite.invite_space_id, kind: "stamp_created" });
   assert(directNotificationWrite.error, "A client could write notifications directly");
 
-  console.log("13/15 Verifying end, read-only archive, and blocked writes…");
+  console.log("14/16 Verifying end, read-only archive, and blocked writes…");
   const endedSpaceId = resultData(await a.client.rpc("end_couple_space"), "end Couple Space");
   assert(endedSpaceId === invite.invite_space_id, "Ended an unexpected Couple Space");
   const departedMembership = singleData(await b.client.from("couple_members").select("departed_at").eq("space_id", invite.invite_space_id).eq("user_id", b.user.id).single(), "partner reads departed membership");
@@ -485,7 +529,7 @@ async function main() {
     .eq("notification_id", postArchiveNotification.id), "read post-archive Push deliveries");
   assert(postArchiveDeliveries.length === 0, "An ended Couple Space created a new Push delivery");
 
-  console.log("14/15 Verifying original-partner-only recovery creates a fresh active space…");
+  console.log("15/16 Verifying original-partner-only recovery creates a fresh active space…");
   const recoveryRows = resultData(await a.client.rpc("create_recovery_invite", { target_archived_space_id: invite.invite_space_id }), "create recovery invite");
   const recoveryInvite = recoveryRows?.[0];
   assert(recoveryInvite && /^\d{6}$/.test(recoveryInvite.invite_code), "Recovery RPC did not return a six-digit code");
@@ -502,7 +546,7 @@ async function main() {
   }), "create card after recovery");
   assert(recoveredCard.status === "active", "Recovered partners could not create a fresh active card");
 
-  console.log("15/15 Verifying card archive history remains private…");
+  console.log("16/16 Verifying card archive history remains private…");
   const formerCards = resultData(await a.client.from("cards").select("id, status").eq("space_id", invite.invite_space_id).eq("status", "archived"), "former member reads archived cards");
   assert(formerCards.length >= 3, "Archived card history was not retained after ending the space");
   const outsiderActivities = resultData(await outsider.client.from("card_activity_events").select("id").eq("space_id", invite.invite_space_id), "outsider activity query");

@@ -44,6 +44,10 @@ function humanizeError(error) {
     [/Recovery is only available to the original two people/i, "只有原本的兩人可以重新連結"],
     [/The recovery period has ended/i, "這段關係的 30 天恢復期限已結束"],
     [/No active Couple Space found/i, "找不到可結束的共同空間"],
+    [/No pending pairing invite found/i, "目前沒有可取消的配對邀請"],
+    [/Pending Couple Space is already paired/i, "對方剛剛已加入，正在為你開啟共同首頁"],
+    [/Pending Couple Space contains records/i, "這次邀請已經有資料，無法直接取消"],
+    [/Pending pairing invite cannot be cancelled/i, "這次邀請目前無法取消，請重新整理後再試"],
     [/Only the assigned partner can stamp/i, "這張個人卡只能由指定的伴侶蓋章"],
     [/Existing progress requires confirmation/i, "已有蓋章紀錄，請先確認規則變更的影響"],
     [/Reward redemption is already in progress/i, "獎勵正在兌換流程中，暫時不能修改規則"],
@@ -288,11 +292,12 @@ function ProfileGate({ profile, onSaved }) {
 }
 
 function PairingScreen({ profile, membership, invite, archives, onOpenArchive, onRefresh }) {
-  const [mode, setMode] = useState(membership ? "invite" : "invite");
+  const [mode, setMode] = useState("invite");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
 
   useEffect(() => {
     if (!membership?.space_id) return undefined;
@@ -333,6 +338,20 @@ function PairingScreen({ profile, membership, invite, archives, onOpenArchive, o
     await navigator.clipboard.writeText(invite.invite_code || invite.code);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
+  };
+
+  const cancelPendingPairing = async () => {
+    const { error: rpcError } = await supabase.rpc("cancel_pending_pairing");
+    if (rpcError) {
+      // A partner may have accepted the code while the confirmation sheet was
+      // open. Refresh first so that successful pairing wins over a stale error.
+      await onRefresh();
+      throw rpcError;
+    }
+    setCancelOpen(false);
+    setCode("");
+    setMode("join");
+    await onRefresh();
   };
 
   const displayCode = invite?.invite_code || invite?.code;
@@ -377,6 +396,7 @@ function PairingScreen({ profile, membership, invite, archives, onOpenArchive, o
             <button className="primary-button" disabled={busy || code.length !== 6}>{busy ? "加入中…" : "加入 Couple Space"}</button>
           </form>
         )}
+        {membership && <button className="text-button centered pairing-cancel-button" disabled={busy} onClick={() => setCancelOpen(true)}><X size={14} /> 取消這次邀請</button>}
         <ErrorNotice>{error}</ErrorNotice>
       </section>
       {archives.length > 0 && (
@@ -386,6 +406,7 @@ function PairingScreen({ profile, membership, invite, archives, onOpenArchive, o
           </div>
         </section>
       )}
+      {cancelOpen && <CancelPendingPairingModal onClose={() => setCancelOpen(false)} onCancelled={cancelPendingPairing} />}
     </main>
   );
 }
@@ -411,6 +432,40 @@ function useModalScrollLock() {
     document.body.classList.add("has-modal");
     return () => document.body.classList.remove("has-modal");
   }, []);
+}
+
+function CancelPendingPairingModal({ onClose, onCancelled }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useModalScrollLock();
+
+  const cancel = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      await onCancelled();
+    } catch (cancelError) {
+      setBusy(false);
+      setError(humanizeError(cancelError));
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !busy && onClose()}>
+      <section className="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="cancel-pairing-title">
+        <div className="modal-heading"><div><span className="eyebrow">PENDING INVITATION</span><h2 id="cancel-pairing-title">取消這次邀請？</h2></div><button className="icon-button" aria-label="關閉" disabled={busy} onClick={onClose}><X /></button></div>
+        <div className="danger-panel">
+          <strong>這只會刪除尚未配對的一人草稿空間與未使用配對碼。</strong>
+          <p>不會影響已配對的共同空間、卡片、封存回憶或恢復配對紀錄。取消後，你可以改輸入另一半的配對碼。</p>
+        </div>
+        <div className="action-stack">
+          <button className="primary-button danger-primary" disabled={busy} onClick={cancel}>{busy ? "取消中…" : "確認取消邀請"}</button>
+          <button className="secondary-button" disabled={busy} onClick={onClose}>保留這次邀請</button>
+        </div>
+        <ErrorNotice>{error}</ErrorNotice>
+      </section>
+    </div>
+  );
 }
 
 function CreateCardModal({ spaceId, userId, members, onClose, onCreated }) {
