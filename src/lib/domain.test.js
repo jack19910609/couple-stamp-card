@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cardProgress, isTerminalOutboxError, isUndoable, upsertById } from "./domain.js";
+import { canInteractWithEvent, cardProgress, isTerminalOutboxError, isUndoable, upsertById } from "./domain.js";
 
 describe("cardProgress", () => {
   const card = { id: "card-1", target_count: 2 };
@@ -51,8 +51,15 @@ describe("event helpers", () => {
     expect(isUndoable(event, "u1", now + 2 * 60 * 1000)).toBe(false);
   });
 
+  it("locks all event interactions when the source card is archived", () => {
+    const event = { actor_id: "u1", occurred_at: "2026-08-05T10:01:00Z", undone_at: null };
+    expect(canInteractWithEvent(event, { cardIsActive: false })).toBe(false);
+    expect(canInteractWithEvent(event, { cardIsActive: true })).toBe(true);
+  });
+
   it("distinguishes rejected business actions from retryable network failures", () => {
     expect(isTerminalOutboxError({ message: "Card is already complete" })).toBe(true);
+    expect(isTerminalOutboxError({ message: "Card is archived and cannot be changed" })).toBe(true);
     expect(isTerminalOutboxError({ message: "The undo window has expired" })).toBe(true);
     expect(isTerminalOutboxError({ message: "Failed to fetch" })).toBe(false);
   });

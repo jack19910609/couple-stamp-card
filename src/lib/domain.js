@@ -63,7 +63,11 @@ export function isUndoable(event, userId, now = Date.now()) {
   return now - new Date(event.occurred_at).getTime() <= 10 * 60 * 1000;
 }
 
+export function canInteractWithEvent(event, { cardIsActive = true, readOnly = false } = {}) {
+  return Boolean(event) && cardIsActive && !readOnly && !event.pending;
+}
+
 export function isTerminalOutboxError(error) {
   const message = error?.message || "";
-  return /Card is already complete|Card is not active|undo window has expired|Stamp event not found|Only the assigned partner can stamp|Cannot undo after reward redemption|Comment ID already belongs|A comment between|Reaction is not supported/i.test(message);
+  return /Card is already complete|Card is not active|Card is archived and cannot be changed|undo window has expired|Stamp event not found|Only the assigned partner can stamp|Cannot undo after reward redemption|Comment ID already belongs|A comment between|Reaction is not supported/i.test(message);
 }

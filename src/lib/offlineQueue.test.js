@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendToQueue, readQueue, removeQueuedAction, replaceQueuedReaction } from "./offlineQueue.js";
+import { appendToQueue, isQueuedActionForInactiveCard, queuedActionCardId, readQueue, removeQueuedAction, replaceQueuedReaction } from "./offlineQueue.js";
 
 function memoryStorage() {
   const values = new Map();
@@ -25,5 +25,25 @@ describe("offline queue", () => {
     queue = replaceQueuedReaction("user-1", queue, { id: "r2", type: "reaction", eventId: "event-1", emoji: "👏", previousReaction: { id: "old" } }, storage);
     expect(queue).toHaveLength(1);
     expect(queue[0]).toMatchObject({ id: "r2", emoji: "👏", previousReaction: null });
+  });
+
+  it("identifies queued operations targeting a card that is no longer active", () => {
+    const events = [{ id: "event-1", card_id: "archived-card" }];
+    const activeCardIds = new Set(["active-card"]);
+    const actions = [
+      { type: "stamp", event: { card_id: "archived-card" } },
+      { type: "undo", eventId: "event-1" },
+      { type: "comment", comment: { card_id: "archived-card" } },
+      { type: "reaction", eventId: "event-1" },
+    ];
+
+    expect(actions.map((action) => queuedActionCardId(action, events))).toEqual([
+      "archived-card", "archived-card", "archived-card", "archived-card",
+    ]);
+    expect(actions.every((action) => isQueuedActionForInactiveCard(action, activeCardIds, events))).toBe(true);
+  });
+
+  it("keeps actions when the target card cannot yet be resolved", () => {
+    expect(isQueuedActionForInactiveCard({ type: "undo", eventId: "unknown" }, new Set(), [])).toBe(false);
   });
 });

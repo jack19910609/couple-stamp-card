@@ -27,8 +27,8 @@ import {
   X,
 } from "lucide-react";
 import { supabase, isSupabaseConfigured } from "./src/lib/supabase.js";
-import { CARD_MODE_LABELS, cardProgress, formatRelativeTime, isTerminalOutboxError, isUndoable, upsertById } from "./src/lib/domain.js";
-import { appendToQueue, readQueue, removeQueuedAction, replaceQueuedReaction, writeQueue } from "./src/lib/offlineQueue.js";
+import { canInteractWithEvent, CARD_MODE_LABELS, cardProgress, formatRelativeTime, isTerminalOutboxError, isUndoable, upsertById } from "./src/lib/domain.js";
+import { appendToQueue, isQueuedActionForInactiveCard, readQueue, removeQueuedAction, replaceQueuedReaction, writeQueue } from "./src/lib/offlineQueue.js";
 import { canApplyPwaUpdate, updateBlockReason } from "./src/lib/pwaUpdate.js";
 import { currentPushSubscription, pushPermission, pushSupport, subscribeToPush, unsubscribeFromPush } from "./src/lib/push.js";
 
@@ -56,6 +56,7 @@ function humanizeError(error) {
     [/Card reward is not ready/i, "卡片完成後才能申請兌換獎勵"],
     [/other partner must confirm reward redemption/i, "需要由另一位伴侶確認已兌換"],
     [/Cannot undo after reward redemption/i, "已進入獎勵兌換流程，不能再復原這個章"],
+    [/Card is archived and cannot be changed/i, "這張卡已封存，無法修改"],
     [/undo window has expired/i, "十分鐘的復原時間已結束"],
     [/Card is already complete/i, "這張卡已經集滿"],
     [/A comment between/i, "留言須介於 1 到 300 個字元"],
@@ -791,14 +792,14 @@ function CardTile({ card, events, memberNames, currentUserId, onOpen }) {
   );
 }
 
-function EventItem({ event, memberNames, currentUserId, onUndo, showCard, cardTitle, comments = [], reactions = [], onAddComment, onSetReaction, readOnly = false, highlighted = false }) {
+function EventItem({ event, memberNames, currentUserId, onUndo, showCard, cardTitle, comments = [], reactions = [], onAddComment, onSetReaction, readOnly = false, cardIsActive = true, highlighted = false }) {
   const undone = Boolean(event.undone_at);
   const name = memberNames[event.actor_id] || "伴侶";
   const [commentDraft, setCommentDraft] = useState("");
   const eventComments = comments.filter((comment) => comment.event_id === event.id);
   const eventReactions = reactions.filter((reaction) => reaction.event_id === event.id);
   const ownReaction = eventReactions.find((reaction) => reaction.actor_id === currentUserId)?.emoji || null;
-  const canInteract = !readOnly && !event.pending;
+  const canInteract = canInteractWithEvent(event, { cardIsActive, readOnly });
   const addComment = (submitEvent) => {
     submitEvent.preventDefault();
     const body = commentDraft.trim();
@@ -823,7 +824,7 @@ function EventItem({ event, memberNames, currentUserId, onUndo, showCard, cardTi
         {eventComments.length > 0 && <div className="comment-list">{eventComments.map((comment) => <div className="comment-item" key={comment.id}><InitialAvatar name={memberNames[comment.author_id] || "伴侶"} small /><span className="comment-copy"><strong>{memberNames[comment.author_id] || "伴侶"}</strong><p>{comment.body}</p><time>{comment.pending ? "等待同步" : formatRelativeTime(comment.created_at)}</time></span></div>)}</div>}
         {canInteract && <form className="comment-form" onSubmit={addComment}><label className="sr-only" htmlFor={`comment-${event.id}`}>回覆這次蓋章</label><input id={`comment-${event.id}`} maxLength={300} value={commentDraft} onChange={(inputEvent) => setCommentDraft(inputEvent.target.value)} placeholder="留下一句回覆…" /><button aria-label="送出回覆" disabled={!commentDraft.trim()}><Send size={15} /></button></form>}
       </div>
-      {!readOnly && !undone && isUndoable(event, currentUserId) && <button className="undo-button" onClick={() => onUndo(event)}><Undo2 size={14} /> 復原</button>}
+      {canInteract && !undone && isUndoable(event, currentUserId) && <button className="undo-button" onClick={() => onUndo(event)}><Undo2 size={14} /> 復原</button>}
     </div>
   );
 }
@@ -889,9 +890,9 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
       supabase.from("stamp_reactions").select("*").eq("space_id", space.id).order("updated_at"),
       supabase.from("user_notifications").select("*").eq("space_id", space.id).eq("recipient_id", user.id).order("created_at", { ascending: false }).limit(50),
     ]);
-    setLoading(false);
     if (cardsResult.error || eventsResult.error || activitiesResult.error || commentsResult.error || reactionsResult.error || notificationsResult.error) {
       setError(humanizeError(cardsResult.error || eventsResult.error || activitiesResult.error || commentsResult.error || reactionsResult.error || notificationsResult.error));
+      setLoading(false);
       return;
     }
     setCards(cardsResult.data || []);
@@ -906,6 +907,7 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
     });
     setReactions((current) => mergeReactionsWithQueue(reactionsResult.data || [], current));
     setNotifications(notificationsResult.data || []);
+    setLoading(false);
   }, [mergeReactionsWithQueue, space.id, user.id]);
 
   const persistOutbox = useCallback((updater) => {
@@ -918,13 +920,35 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
   }, [user.id]);
 
   const flushOutbox = useCallback(async () => {
-    if (!navigator.onLine || flushingRef.current || outboxRef.current.length === 0) return;
+    if (loading || !navigator.onLine || flushingRef.current || outboxRef.current.length === 0) return;
     flushingRef.current = true;
     setSyncing(true);
     setError("");
     try {
       while (outboxRef.current.length && navigator.onLine) {
         const action = outboxRef.current[0];
+        const discardAction = (message) => {
+          if (action.type === "stamp") {
+            setEvents((current) => current.filter((event) => event.id !== action.event.id));
+          } else if (action.type === "undo") {
+            setEvents((current) => current.map((event) => event.id === action.eventId
+              ? { ...event, undone_at: null, undone_by: null, pending: false }
+              : event));
+          } else if (action.type === "comment") {
+            setComments((current) => current.filter((comment) => comment.id !== action.comment.id));
+          } else {
+            setReactions((current) => {
+              const withoutCurrent = current.filter((reaction) => !(reaction.event_id === action.eventId && reaction.actor_id === user.id));
+              return action.previousReaction ? [...withoutCurrent, { ...action.previousReaction, pending: false }] : withoutCurrent;
+            });
+          }
+          persistOutbox((current) => removeQueuedAction(user.id, current, action.id));
+          setError(message);
+        };
+        if (isQueuedActionForInactiveCard(action, new Set(cards.map((card) => card.id)), events)) {
+          discardAction("這張卡已封存，無法同步這筆操作，已自動撤回。");
+          continue;
+        }
         let request;
         if (action.type === "stamp") {
           request = supabase.rpc("create_stamp_event", {
@@ -953,22 +977,7 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
         const { data, error: mutationError } = await request;
         if (mutationError) {
           if (!isTerminalOutboxError(mutationError)) throw mutationError;
-          if (action.type === "stamp") {
-            setEvents((current) => current.filter((event) => event.id !== action.event.id));
-          } else if (action.type === "undo") {
-            setEvents((current) => current.map((event) => event.id === action.eventId
-              ? { ...event, undone_at: null, undone_by: null, pending: false }
-              : event));
-          } else if (action.type === "comment") {
-            setComments((current) => current.filter((comment) => comment.id !== action.comment.id));
-          } else {
-            setReactions((current) => {
-              const withoutCurrent = current.filter((reaction) => !(reaction.event_id === action.eventId && reaction.actor_id === user.id));
-              return action.previousReaction ? [...withoutCurrent, { ...action.previousReaction, pending: false }] : withoutCurrent;
-            });
-          }
-          persistOutbox((current) => removeQueuedAction(user.id, current, action.id));
-          setError(`${humanizeError(mutationError)}；這筆離線操作未送出。`);
+          discardAction(`${humanizeError(mutationError)}；這筆離線操作未送出。`);
           continue;
         }
         if (action.type === "stamp" || action.type === "undo") {
@@ -993,7 +1002,7 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
       flushingRef.current = false;
       setSyncing(false);
     }
-  }, [persistOutbox, user.id]);
+  }, [cards, events, loading, persistOutbox, user.id]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -1311,7 +1320,7 @@ function Dashboard({ user, accessToken, profile, space, members, onOpenArchive, 
           </section>
           <section className="section-block">
             <div className="section-title"><div><span className="eyebrow">RECENT MOMENTS</span><h3>最近互動</h3></div><Clock3 size={20} /></div>
-            {recentEvents.length ? recentEvents.map((event) => <EventItem key={event.id} event={event} memberNames={memberNames} currentUserId={user.id} onUndo={undoStamp} showCard cardTitle={cards.find((card) => card.id === event.card_id)?.title || "共同卡"} comments={comments} reactions={reactions} onAddComment={addComment} onSetReaction={setReaction} />) : <div className="empty-inline">你們的第一個互動會出現在這裡。</div>}
+            {recentEvents.length ? recentEvents.map((event) => <EventItem key={event.id} event={event} memberNames={memberNames} currentUserId={user.id} onUndo={undoStamp} showCard cardTitle={cards.find((card) => card.id === event.card_id)?.title || "共同卡"} comments={comments} reactions={reactions} onAddComment={addComment} onSetReaction={setReaction} cardIsActive={cards.some((card) => card.id === event.card_id)} />) : <div className="empty-inline">你們的第一個互動會出現在這裡。</div>}
           </section>
         </>
       )}

@@ -41,3 +41,20 @@ export function removeQueuedAction(userId, queue, actionId, storage = globalThis
   writeQueue(userId, next, storage);
   return next;
 }
+
+export function queuedActionCardId(action, events = []) {
+  if (action?.type === "stamp") return action.event?.card_id || null;
+  if (action?.type === "comment") return action.comment?.card_id || null;
+  if (action?.type === "undo" || action?.type === "reaction") {
+    return events.find((event) => event.id === action.eventId)?.card_id || null;
+  }
+  return null;
+}
+
+// Only discard an action when its card can be resolved from local data and is
+// known not to be active. Unknown cards stay queued so a transient data load
+// failure can never discard a valid offline action.
+export function isQueuedActionForInactiveCard(action, activeCardIds, events = []) {
+  const cardId = queuedActionCardId(action, events);
+  return Boolean(cardId) && !activeCardIds.has(cardId);
+}

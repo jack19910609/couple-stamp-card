@@ -396,6 +396,11 @@ async function main() {
   console.log("11/16 Verifying individual archive and copy into a new round…");
   const archivedPersonal = singleData(await a.client.rpc("archive_card", { target_card_id: personalCard.id }), "archive personal card");
   assert(archivedPersonal.status === "archived" && archivedPersonal.archived_at, "Individual card archive failed");
+  const archivedPersonalEvent = singleData(await a.client.from("stamp_events").select("id, undone_at").eq("card_id", personalCard.id).order("occurred_at").limit(1).single(), "read archived card stamp");
+  const archivedUndo = await a.client.rpc("undo_stamp_event", { target_event_id: archivedPersonalEvent.id, undo_requested_at: new Date().toISOString() });
+  assert(archivedUndo.error?.message === "Card is archived and cannot be changed", "Archived-card undo did not return the expected business error");
+  const retainedArchivedStamp = singleData(await a.client.from("stamp_events").select("undone_at").eq("id", archivedPersonalEvent.id).single(), "verify archived card stamp was retained");
+  assert(retainedArchivedStamp.undone_at === archivedPersonalEvent.undone_at, "Undo changed an archived card stamp");
   const copiedPersonal = singleData(await b.client.rpc("copy_card", { target_card_id: personalCard.id }), "copy archived card");
   assert(copiedPersonal.status === "active" && copiedPersonal.id !== personalCard.id && copiedPersonal.mode === "personal", "Copy did not create a fresh active round");
 
@@ -441,8 +446,8 @@ async function main() {
     const rows = resultData(await admin.from("push_delivery_log")
       .select("id, status, attempts, subscription_id, response_status, error_code")
       .eq("notification_id", pushProbeNotification.id), "read Push delivery log");
-    return rows[0] || null;
-  }, "deployed Edge Function Push delivery", 60_000);
+    return rows[0]?.status === "invalid" ? rows[0] : null;
+  }, "invalid Push endpoint retirement", 60_000);
   assert(
     invalidDelivery.status === "invalid" && invalidDelivery.attempts === 1,
     `Invalid Push endpoint was not retired after its first 404 response (status=${invalidDelivery.status}, response=${invalidDelivery.response_status}, error=${invalidDelivery.error_code})`,
